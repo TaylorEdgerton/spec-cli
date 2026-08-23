@@ -33,20 +33,30 @@ func cmdREADME(args []string) error {
 	if err := noArgs(args, "spec readme"); err != nil {
 		return err
 	}
-	root, err := currentRoot()
+	directory, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	created, output, err := documents.README(root)
+	target := filepath.Join(directory, "README.md")
+	documentPath := "README.md"
+	root, rootErr := gitutil.Root(directory)
+	if rootErr == nil {
+		if relative, relativeErr := filepath.Rel(root, target); relativeErr == nil {
+			documentPath = filepath.ToSlash(relative)
+		}
+	}
+	created, output, err := documents.README(directory, documentPath)
 	if err != nil {
 		return err
 	}
 	if created {
-		fmt.Printf("Created %s\n", filepath.Join(root, "README.md"))
+		fmt.Printf("Created %s\n", target)
 		return nil
 	}
-	if workspace, loadErr := state.Load(root); loadErr == nil {
-		_ = workspace.SavePrompt(output)
+	if rootErr == nil {
+		if workspace, loadErr := state.Load(root); loadErr == nil {
+			_ = workspace.SavePrompt(output)
+		}
 	}
 	fmt.Print(output)
 	return nil

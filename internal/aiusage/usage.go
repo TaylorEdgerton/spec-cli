@@ -146,33 +146,42 @@ func ParsePrometheus(input string, duration time.Duration) Summary {
 func Format(writer io.Writer, summary Summary) {
 	fmt.Fprintln(writer, "AI usage")
 	fmt.Fprintln(writer)
+	FormatSummary(writer, summary, "")
+}
+
+// FormatSummary writes one usage summary without a heading. Prefix is applied
+// to every line so callers can embed the summary in a larger report.
+func FormatSummary(writer io.Writer, summary Summary, prefix string) {
 	if !summary.Available || len(summary.Usage) == 0 {
 		reason := summary.UnavailableReason
 		if reason == "" {
 			reason = "no supported token telemetry has been received"
 		}
-		fmt.Fprintf(writer, "usage unavailable: %s\n", reason)
+		fmt.Fprintf(writer, "%susage unavailable: %s\n", prefix, reason)
 	} else {
-		for _, usage := range summary.Usage {
+		for index, usage := range summary.Usage {
+			if index > 0 {
+				fmt.Fprintln(writer)
+			}
 			heading := usage.Provider
 			if usage.Model != "" && usage.Model != "unknown" {
 				heading += " (" + usage.Model + ")"
 			}
-			fmt.Fprintln(writer, heading)
-			fmt.Fprintf(writer, "  Input       %s\n", formatUint(usage.InputTokens))
-			fmt.Fprintf(writer, "  Cached      %s\n", formatUint(usage.CachedInputTokens))
-			fmt.Fprintf(writer, "  Output      %s\n", formatUint(usage.OutputTokens))
+			fmt.Fprintln(writer, prefix+heading)
+			fmt.Fprintf(writer, "%s  Input       %s\n", prefix, formatUint(usage.InputTokens))
+			fmt.Fprintf(writer, "%s  Cached      %s\n", prefix, formatUint(usage.CachedInputTokens))
+			fmt.Fprintf(writer, "%s  Output      %s\n", prefix, formatUint(usage.OutputTokens))
 			if usage.Requests > 0 {
-				fmt.Fprintf(writer, "  Requests    %s\n", formatUint(usage.Requests))
+				fmt.Fprintf(writer, "%s  Requests    %s\n", prefix, formatUint(usage.Requests))
 			}
 			if usage.EstimatedCostUSD != nil {
-				fmt.Fprintf(writer, "  Cost        $%.4f estimated\n", *usage.EstimatedCostUSD)
+				fmt.Fprintf(writer, "%s  Cost        $%.4f estimated\n", prefix, *usage.EstimatedCostUSD)
 			}
-			fmt.Fprintln(writer)
 		}
 	}
 	if summary.SandboxDurationSeconds > 0 {
-		fmt.Fprintf(writer, "Sandbox       %s\n", formatDuration(time.Duration(summary.SandboxDurationSeconds)*time.Second))
+		fmt.Fprintln(writer)
+		fmt.Fprintf(writer, "%sSandbox       %s\n", prefix, formatDuration(time.Duration(summary.SandboxDurationSeconds)*time.Second))
 	}
 }
 

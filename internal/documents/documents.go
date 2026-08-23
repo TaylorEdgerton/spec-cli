@@ -47,8 +47,8 @@ const runbookTemplate = `# Runbook
 
 var adrPattern = regexp.MustCompile(`^(\d+)-`)
 
-func README(root string) (created bool, prompt string, err error) {
-	path := filepath.Join(root, "README.md")
+func README(directory, documentPath string) (created bool, prompt string, err error) {
+	path := filepath.Join(directory, "README.md")
 	data, readErr := os.ReadFile(path)
 	if os.IsNotExist(readErr) {
 		return true, "", os.WriteFile(path, []byte(readmeTemplate), 0o644)
@@ -56,7 +56,7 @@ func README(root string) (created bool, prompt string, err error) {
 	if readErr != nil {
 		return false, "", readErr
 	}
-	prompt = updatePrompt("README.md", string(data), "Keep setup, use, and verification instructions accurate and concise.")
+	prompt = updatePrompt(documentPath, string(data), "Keep this directory's purpose, setup, use, and verification instructions accurate and concise.")
 	return false, prompt, nil
 }
 
