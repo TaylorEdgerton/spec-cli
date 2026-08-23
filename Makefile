@@ -8,6 +8,10 @@ TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 build: ## Build the binary for the current platform
 	go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/spec
 
+dev: ## Build and install the current checkout as version dev
+	$(MAKE) build VERSION=dev
+	./scripts/install-dev.sh "$(CURDIR)/bin/$(BINARY)"
+
 fmt: ## Format Go source files
 	gofmt -w .
 
@@ -43,4 +47,4 @@ help: ## Show this help message
 	@echo "Available commands:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-15s %s\n", $$1, $$2}'
 
-.PHONY: build fmt vet lint test verify dist release clean help
+.PHONY: build dev fmt vet lint test verify dist release clean help
