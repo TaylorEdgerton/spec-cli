@@ -27,6 +27,8 @@ Git is required, run `spec init` to create a Git repository if required although
 
 The active change is stored in `.spec.md` at the repository root which is excluded from the repo.
 
+When run in a terminal, `spec new` offers a guided setup. Use the arrow keys and Enter to select an option. The guided flow asks for the intent, outcome, constraints, and relevant files.
+
 ## Install
 
 Linux and macOS:
@@ -54,7 +56,7 @@ spec uninstall
 ```text
 spec init                 Register the current Git workspace.
 spec configure            Open global configuration and templates.
-spec new [title]          Create and activate a change specification.
+spec new [title]          Create a change specification with optional guidance.
 spec prompt [--info]      Print a bounded, provider-neutral prompt.
 spec prompt --include-files
                           Include relevant file contents in the prompt.
@@ -120,11 +122,16 @@ For `claude`, `codex`, `copilot`, and `gemini` sandboxes, Spec enables native Op
 
 ## Development
 
+Building from source requires Go 1.25 or later.
+
 ```sh
 ./scripts/verify.sh
 make build
+make dev
 make dist VERSION=v0.1.0
 ```
+
+`make dev` builds the current checkout as version `dev`. If `spec` is already on PATH, it replaces that executable. Otherwise, it installs to `${XDG_BIN_HOME:-$HOME/.local/bin}` and adds the directory to PATH in `~/.profile`.
 
 Generated binaries are in `bin/` and `dist/`. Do not commit them.
 
