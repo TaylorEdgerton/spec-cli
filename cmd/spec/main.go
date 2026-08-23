@@ -22,7 +22,7 @@ var commands = []command{
 	{"verify", "run deterministic project checks", cmdVerify},
 	{"done", "finish the active change", cmdDone},
 	{"adr", "create an architecture decision record", cmdADR},
-	{"readme", "create or prepare README.md for an update", cmdREADME},
+	{"readme", "create or prepare README.md in the current directory", cmdREADME},
 	{"runbook", "create or prepare the project runbook", cmdRunbook},
 	{"sandbox", "run the workspace in Docker Sandbox", cmdSandbox},
 	{"usage", "report AI usage for the active Spec sandbox", cmdUsage},

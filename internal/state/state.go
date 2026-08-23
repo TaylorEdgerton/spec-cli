@@ -261,6 +261,33 @@ func (workspace Workspace) Verification() (*Verification, error) {
 	return &result, nil
 }
 
+// HistoryRecords returns completed Specs in their stored chronological order.
+func (workspace Workspace) HistoryRecords() ([]History, error) {
+	file, err := os.Open(filepath.Join(workspace.Dir, "history.jsonl"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var records []History
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var record History
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			return nil, fmt.Errorf("read Spec history: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 func (workspace *Workspace) Finish(record History, specContent []byte, activePath string) (History, error) {
 	if !workspace.Active {
 		return History{}, fmt.Errorf("no active change; run `spec new`")
@@ -358,6 +385,7 @@ func historyContains(path, archive string) (bool, error) {
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		var record History
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
