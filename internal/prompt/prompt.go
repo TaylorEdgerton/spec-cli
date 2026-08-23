@@ -72,13 +72,13 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 			info.MissingFiles = append(info.MissingFiles, relative)
 			continue
 		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			info.MissingFiles = append(info.MissingFiles, relative)
-			continue
-		}
-		info.Files = append(info.Files, relative)
 		if !includeFiles {
+			fileInfo, statErr := os.Stat(path)
+			if statErr != nil || fileInfo.IsDir() {
+				info.MissingFiles = append(info.MissingFiles, relative)
+				continue
+			}
+			info.Files = append(info.Files, relative)
 			if !wroteFileList {
 				builder.WriteString("\n## Relevant files\n")
 				wroteFileList = true
@@ -88,6 +88,12 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 			builder.WriteString("`\n")
 			continue
 		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			info.MissingFiles = append(info.MissingFiles, relative)
+			continue
+		}
+		info.Files = append(info.Files, relative)
 		remaining := maxFileTotal - totalFileBytes
 		limitSize := maxFileBytes
 		if remaining < limitSize {
@@ -108,25 +114,35 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 		builder.WriteString("```\n")
 	}
 
-	diff, truncated, err := gitutil.Diff(root, workspace.BaseSHA, maxDiffBytes)
-	if err != nil {
-		return "", Info{}, err
-	}
-	if diff != "" {
-		info.IncludedDiff, info.DiffTruncated = true, truncated
-		builder.WriteString("\n## Current Git diff\n\n```diff\n")
-		builder.WriteString(diff)
-		builder.WriteString("\n```\n")
+	if includeFiles {
+		diff, truncated, err := gitutil.Diff(root, workspace.BaseSHA, maxDiffBytes)
+		if err != nil {
+			return "", Info{}, err
+		}
+		if diff != "" {
+			info.IncludedDiff, info.DiffTruncated = true, truncated
+			builder.WriteString("\n## Current Git diff\n\n```diff\n")
+			builder.WriteString(diff)
+			builder.WriteString("\n```\n")
+		}
+	} else if workspace.BaseSHA != "" {
+		builder.WriteString("\nInspect changes since the Spec began with `git diff ")
+		builder.WriteString(workspace.BaseSHA)
+		builder.WriteString(" --`.\n")
 	}
 	verification, err := workspace.Verification()
 	if err != nil {
 		return "", Info{}, err
 	}
 	if verification != nil && !verification.Passed {
-		info.IncludedError = true
-		builder.WriteString("\n## Latest verification failure\n\n```text\n")
-		builder.WriteString(limit(verification.Output, 32*1024))
-		builder.WriteString("\n```\n")
+		if includeFiles {
+			info.IncludedError = true
+			builder.WriteString("\n## Latest verification failure\n\n```text\n")
+			builder.WriteString(limit(verification.Output, 32*1024))
+			builder.WriteString("\n```\n")
+		} else {
+			builder.WriteString("\nThe latest verification failed. Run `spec verify` to reproduce it.\n")
+		}
 	}
 	result := builder.String()
 	info.ApproxTokens = (len(result) + 3) / 4

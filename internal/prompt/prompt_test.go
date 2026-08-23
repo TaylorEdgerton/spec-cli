@@ -36,6 +36,32 @@ func TestBuildUsesSelectedContextAndFailedVerification(t *testing.T) {
 	if err := workspace.SaveVerification(state.Verification{Passed: false, Output: "test failed marker"}); err != nil {
 		t.Fatal(err)
 	}
+	activeWorkspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, compactInfo, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"Relevant files\n\n- `main.go`",
+		"git diff " + activeWorkspace.BaseSHA + " --",
+		"The latest verification failed. Run `spec verify`",
+	} {
+		if !strings.Contains(compact, required) {
+			t.Errorf("compact prompt does not contain %q", required)
+		}
+	}
+	for _, excluded := range []string{"func main()", "## Current Git diff", "test failed marker"} {
+		if strings.Contains(compact, excluded) {
+			t.Errorf("compact prompt unexpectedly contains %q", excluded)
+		}
+	}
+	if compactInfo.IncludedDiff || compactInfo.IncludedError {
+		t.Fatalf("compact prompt reports expanded context: %+v", compactInfo)
+	}
+
 	result, info, err := Build(root, true)
 	if err != nil {
 		t.Fatal(err)
