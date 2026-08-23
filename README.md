@@ -116,9 +116,9 @@ Add file paths as list items in `.spec.md` under `## Relevant Files`. The `spec 
 
 ## Docker Sandbox
 
-`spec sandbox` scans the complete workspace for sensitive file names to outline just in case, including Git-ignored and untracked files. The command then uses Docker's `sbx` command with the Git working tree.
+`spec sandbox` scans the complete workspace for sensitive file names to outline just in case, The command then uses Docker's `sbx` command with the Git working tree.
 
-For `claude`, `codex`, `copilot`, and `gemini` sandboxes, Spec enables native OpenTelemetry metrics and sends them to a collector inside the sandbox. Run `spec usage` to see the current usage. `spec done` stores the final provider/model token and request totals in external Spec history, which `spec usage history` displays the history for the workspace.
+For `claude`, `codex`, `copilot`, and `gemini` sandboxes, Spec enables native OpenTelemetry metrics and sends them to a collector inside the sandbox. Run `spec usage` to see the current usage. `spec done` stores the totals in external Spec history, which `spec usage history` displays the history for the workspace.
 
 ## Development
 
