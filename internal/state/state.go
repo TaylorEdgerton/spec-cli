@@ -11,15 +11,25 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
 )
 
-type Metadata struct {
-	Root      string    `json:"root"`
+type SandboxSession struct {
 	ID        string    `json:"id"`
-	Active    bool      `json:"active"`
-	Title     string    `json:"title,omitempty"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	BaseSHA   string    `json:"base_sha,omitempty"`
+	Name      string    `json:"name"`
+	Agent     string    `json:"agent"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+type Metadata struct {
+	Root           string          `json:"root"`
+	ID             string          `json:"id"`
+	Active         bool            `json:"active"`
+	Title          string          `json:"title,omitempty"`
+	StartedAt      time.Time       `json:"started_at,omitempty"`
+	BaseSHA        string          `json:"base_sha,omitempty"`
+	SandboxSession *SandboxSession `json:"sandbox_session,omitempty"`
 }
 
 type Verification struct {
@@ -31,15 +41,16 @@ type Verification struct {
 }
 
 type History struct {
-	Title        string        `json:"title"`
-	StartedAt    time.Time     `json:"started_at"`
-	BaseSHA      string        `json:"base_sha"`
-	FinishedAt   time.Time     `json:"finished_at"`
-	EndSHA       string        `json:"end_sha,omitempty"`
-	ChangedFiles []string      `json:"changed_files,omitempty"`
-	Verification *Verification `json:"verification,omitempty"`
-	Summary      string        `json:"summary,omitempty"`
-	SpecArchive  string        `json:"spec_archive"`
+	Title        string           `json:"title"`
+	StartedAt    time.Time        `json:"started_at"`
+	BaseSHA      string           `json:"base_sha"`
+	FinishedAt   time.Time        `json:"finished_at"`
+	EndSHA       string           `json:"end_sha,omitempty"`
+	ChangedFiles []string         `json:"changed_files,omitempty"`
+	Verification *Verification    `json:"verification,omitempty"`
+	Summary      string           `json:"summary,omitempty"`
+	SpecArchive  string           `json:"spec_archive"`
+	AIUsage      *aiusage.Summary `json:"ai_usage,omitempty"`
 }
 
 type Workspace struct {
@@ -200,6 +211,7 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
 	workspace.Title = title
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
+	workspace.SandboxSession = nil
 	return workspace.saveMetadata()
 }
 
@@ -213,6 +225,16 @@ func (workspace *Workspace) Abandon() error {
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.SandboxSession = nil
+	return workspace.saveMetadata()
+}
+
+func (workspace *Workspace) SaveSandboxSession(session SandboxSession) error {
+	if !workspace.Active {
+		return fmt.Errorf("no active change; run `spec new`")
+	}
+	copy := session
+	workspace.SandboxSession = &copy
 	return workspace.saveMetadata()
 }
 
@@ -263,6 +285,7 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {
 		return History{}, err
 	}
