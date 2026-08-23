@@ -1,6 +1,5 @@
-# Spec does not detect verification commands automatically.
-# Each command is passed to the platform shell and runs from the Git workspace root.
-# Commands run in the order shown and stop after the first failure.
+# Each command is passed to the platform shell and runs from the workspace.
+# Commands run in the order shown and stop on failure.
 
 # Global commands apply when a workspace does not have its own commands.
 verify: []
@@ -11,8 +10,7 @@ verify: []
 #   - go vet ./...
 
 # Workspace commands override the global commands.
-# Use the exact absolute Git root printed by Git or Spec.
-# Quote Windows paths with single quotes so backslashes remain literal.
+# Quote Windows paths with single quotes.
 workspaces: {}
 
 # Example workspace configuration:
