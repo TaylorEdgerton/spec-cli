@@ -31,15 +31,19 @@ The active change is stored in `.spec.md` at the repository root which is exclud
 
 ```text
 spec init                 Register the current Git workspace.
+spec configure            Open global configuration and templates.
 spec new [title]          Create and activate a change specification.
 spec prompt [--info]      Print a bounded, provider-neutral prompt.
+spec prompt --include-files
+                          Include relevant file contents in the prompt.
 spec prompt --copy        Copy the prompt to the system clipboard.
 spec verify               Run configured deterministic checks.
 spec done [summary]       Finish the active change and record its result.
 
 spec adr "Title"          Create an ADR in docs/adr/.
 spec readme               Create or prepare README.md in the current directory.
-spec runbook              Create or prepare docs/runbook.md for an update.
+spec runbook              List scenario runbooks.
+spec runbook "Scenario"   Create or prepare a scenario runbook.
 spec sandbox [agent]      Run the Git workspace with Docker Sandbox.
 spec usage                Report AI usage for the active Spec sandbox.
 spec usage history        Show usage for completed Specs in this workspace.
@@ -51,7 +55,19 @@ spec uninstall            Remove Spec and installer-owned PATH setup.
 
 Spec associates each workspace with its GIT repository. It stores metadata, generated prompts, verification results, completed specification archives, and short history records in the user state directory. The editable active specification stays in the workspace as `.spec.md` which should be the agents current prompt reference.
 
-`config.yml` configuration file is used to define spec verification tasks. On Linux, the default path is `~/.config/spec/config.yml`.
+The installer creates the global configuration folder. On Linux, the default path is `~/.config/spec/`. The first `spec init` installs any missing default files:
+
+```text
+config.yml
+templates/
+  adr.md
+  readme.md
+  runbook.md
+```
+
+Run `spec configure` to open the folder to edit the files. Each document command reads its template from this folder every time it runs, so edits apply to the next time around. The ADR template can use `{{.Number}}` and `{{.Title}}`. The runbook template can use `{{.Title}}`.
+
+`spec verify` reads `config.yml`.
 
 ```yaml
 verify:
@@ -64,11 +80,15 @@ workspaces:
       - ruff check .
 ```
 
-If there is no configured command, Spec detects a small set of common project checks. It gives priority to `scripts/verify.sh`, `make test`, and language-standard test commands.
+## Project documents
+
+`spec readme` uses the global README template to create `README.md` in the current directory. This supports creation in subdirectories.
+
+`spec adr "Title"` creates a numbered decision record in `docs/adr/`. `spec runbook "Scenario"` creates or updates a named procedure such as `docs/runbooks/database-recovery.md`. Run `spec runbook` without a title to list existing runbooks.
 
 ## Prompt context
 
-Add file paths as list items in `.spec.md` under `## Relevant Files`. The `spec prompt` output tells the AI to read `.spec.md`, then adds selected files, a bounded Git diff, and the latest failed verification output when useful. It does not duplicate the full specification, repository, Git history, or AI conversations.
+Add file paths as list items in `.spec.md` under `## Relevant Files`. The `spec prompt` helps output a prompt based on `.spec.md`. Use `spec prompt --include-files` to include the contents of the Relevant Files list for pasting into another external chat session.
 
 ## Docker Sandbox
 
@@ -97,6 +117,8 @@ make release
 ## Install
 
 Linux and macOS:
+
+run these while spec is installed to update to the latest version
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.sh | sh
