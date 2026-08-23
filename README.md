@@ -27,6 +27,28 @@ Git is required, run `spec init` to create a Git repository if required although
 
 The active change is stored in `.spec.md` at the repository root which is excluded from the repo.
 
+## Install
+
+Linux and macOS:
+
+run these while spec is installed to update to the latest version
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.ps1 | iex
+```
+
+## Uninstall
+
+```sh
+spec uninstall
+```
+
 ## Commands
 
 ```text
@@ -49,28 +71,6 @@ spec usage                Report AI usage for the active Spec sandbox.
 spec usage history        Show usage for completed Specs in this workspace.
 spec check                Report workspace readiness and warnings.
 spec uninstall            Remove Spec and installer-owned PATH setup.
-```
-
-## Install
-
-Linux and macOS:
-
-run these while spec is installed to update to the latest version
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.sh | sh
-```
-
-Windows PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.ps1 | iex
-```
-
-## Uninstall
-
-```sh
-spec uninstall
 ```
 
 ## State and configuration
