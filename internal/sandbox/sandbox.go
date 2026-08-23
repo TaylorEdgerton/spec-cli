@@ -280,8 +280,8 @@ func ensureCollector(sandboxName string, existing bool) error {
 		}
 	}
 	if err := runSBX(strings.NewReader(otelCollectorConfig), io.Discard, io.Discard,
-		"exec", "-i", sandboxName, "--", "sh", "-c",
-		"umask 077; mkdir -p /var/lib/spec-telemetry; cat > "+collectorConfig,
+		"exec", "-i", "-u", "root", sandboxName, "--", "sh", "-c",
+		"install -d -m 0755 /var/lib/spec-telemetry; cat > "+collectorConfig+"; chmod 0644 "+collectorConfig,
 	); err != nil {
 		return fmt.Errorf("write OpenTelemetry Collector configuration inside sandbox: %w", err)
 	}

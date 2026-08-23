@@ -114,6 +114,9 @@ esac
 	if strings.Count(commands, "docker run -d") != 1 || !strings.Contains(commands, defaultImage) {
 		t.Fatalf("collector startup commands:\n%s", commands)
 	}
+	if !strings.Contains(commands, "exec -i -u root") {
+		t.Fatalf("collector configuration was not written as root:\n%s", commands)
+	}
 	if strings.Count(commands, "run --name") != 2 {
 		t.Fatalf("agent reattach commands:\n%s", commands)
 	}
