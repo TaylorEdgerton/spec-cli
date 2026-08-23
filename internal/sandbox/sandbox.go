@@ -357,6 +357,7 @@ processors:
 exporters:
   prometheus:
     endpoint: 0.0.0.0:9464
+    metric_expiration: 168h	
     resource_to_telemetry_conversion:
       enabled: false
 
