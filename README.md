@@ -51,6 +51,28 @@ spec check                Report workspace readiness and warnings.
 spec uninstall            Remove Spec and installer-owned PATH setup.
 ```
 
+## Install
+
+Linux and macOS:
+
+run these while spec is installed to update to the latest version
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.ps1 | iex
+```
+
+## Uninstall
+
+```sh
+spec uninstall
+```
+
 ## State and configuration
 
 Spec associates each workspace with its GIT repository. It stores metadata, generated prompts, verification results, completed specification archives, and short history records in the user state directory. The editable active specification stays in the workspace as `.spec.md` which should be the agents current prompt reference.
@@ -112,26 +134,4 @@ Run the release command from a clean `main` branch:
 
 ```sh
 make release
-```
-
-## Install
-
-Linux and macOS:
-
-run these while spec is installed to update to the latest version
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.sh | sh
-```
-
-Windows PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.ps1 | iex
-```
-
-## Uninstall
-
-```sh
-spec uninstall
 ```
