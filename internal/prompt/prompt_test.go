@@ -36,7 +36,7 @@ func TestBuildUsesSelectedContextAndFailedVerification(t *testing.T) {
 	if err := workspace.SaveVerification(state.Verification{Passed: false, Output: "test failed marker"}); err != nil {
 		t.Fatal(err)
 	}
-	result, info, err := Build(root)
+	result, info, err := Build(root, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +56,48 @@ func TestBuildUsesSelectedContextAndFailedVerification(t *testing.T) {
 	}
 	if len(info.MissingFiles) != 1 || info.MissingFiles[0] != "../outside" {
 		t.Fatalf("missing files: %v", info.MissingFiles)
+	}
+}
+
+func TestBuildIncludesRelevantFileContentsOnlyWhenRequested(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	runGit(t, root, "init")
+	write(t, root, "README.md", "# Project\n\nrelevant file content marker\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "-c", "user.name=Spec Test", "-c", "user.email=spec@example.invalid", "commit", "-m", "baseline")
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := change.New(root, "simplify README", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	current := "# Simplify README\n\n## Relevant Files\n\n- `README.md`\n"
+	if err := os.WriteFile(change.ActivePath(root), []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, info, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "## Relevant files\n\n- `README.md`") {
+		t.Fatalf("prompt does not list the relevant path:\n%s", result)
+	}
+	if strings.Contains(result, "relevant file content marker") {
+		t.Fatal("default prompt embeds relevant file content")
+	}
+	if len(info.Files) != 1 || info.Files[0] != "README.md" {
+		t.Fatalf("relevant files: %v", info.Files)
+	}
+
+	result, _, err = Build(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "## Relevant file: README.md") || !strings.Contains(result, "relevant file content marker") {
+		t.Fatalf("prompt does not embed requested file content:\n%s", result)
 	}
 }
 

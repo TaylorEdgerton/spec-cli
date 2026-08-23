@@ -31,7 +31,7 @@ type Info struct {
 	ApproxTokens   int
 }
 
-func Build(root string) (string, Info, error) {
+func Build(root string, includeFiles bool) (string, Info, error) {
 	workspace, err := state.Load(root)
 	if err != nil {
 		return "", Info{}, err
@@ -58,6 +58,7 @@ func Build(root string) (string, Info, error) {
 	info := Info{}
 
 	totalFileBytes := 0
+	wroteFileList := false
 	for _, relative := range relevantFiles(current) {
 		if filepath.ToSlash(filepath.Clean(relative)) == change.ActiveFilename {
 			continue
@@ -76,6 +77,17 @@ func Build(root string) (string, Info, error) {
 			info.MissingFiles = append(info.MissingFiles, relative)
 			continue
 		}
+		info.Files = append(info.Files, relative)
+		if !includeFiles {
+			if !wroteFileList {
+				builder.WriteString("\n## Relevant files\n")
+				wroteFileList = true
+			}
+			builder.WriteString("\n- `")
+			builder.WriteString(relative)
+			builder.WriteString("`\n")
+			continue
+		}
 		remaining := maxFileTotal - totalFileBytes
 		limitSize := maxFileBytes
 		if remaining < limitSize {
@@ -86,7 +98,6 @@ func Build(root string) (string, Info, error) {
 			info.FilesTruncated = true
 		}
 		totalFileBytes += len(data)
-		info.Files = append(info.Files, relative)
 		builder.WriteString("\n## Relevant file: ")
 		builder.WriteString(relative)
 		builder.WriteString("\n\n```text\n")

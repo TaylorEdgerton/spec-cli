@@ -1,0 +1,23 @@
+# Spec does not detect verification commands automatically.
+# Each command is passed to the platform shell and runs from the Git workspace root.
+# Commands run in the order shown and stop after the first failure.
+
+# Global commands apply when a workspace does not have its own commands.
+verify: []
+
+# Example global configuration:
+# verify:
+#   - go test ./...
+#   - go vet ./...
+
+# Workspace commands override the global commands.
+# Use the exact absolute Git root printed by Git or Spec.
+# Quote Windows paths with single quotes so backslashes remain literal.
+workspaces: {}
+
+# Example workspace configuration:
+# workspaces:
+#   '/absolute/path/to/project':
+#     verify:
+#       - npm test
+#       - npm run lint
