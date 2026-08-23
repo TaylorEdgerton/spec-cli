@@ -26,7 +26,7 @@ func Run(root string, stdout, stderr io.Writer, now time.Time) (state.Verificati
 		return state.Verification{}, err
 	}
 	if len(commands) == 0 {
-		return state.Verification{}, fmt.Errorf("no verification is configured; add commands to the external Spec config")
+		return state.Verification{}, fmt.Errorf("no verification is configured; run `spec configure` and add verify commands to config.yml")
 	}
 	result := state.Verification{Commands: commands, StartedAt: now.UTC()}
 	var stored bytes.Buffer

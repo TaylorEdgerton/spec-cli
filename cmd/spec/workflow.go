@@ -9,6 +9,7 @@ import (
 
 	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
+	"github.com/TaylorEdgerton/spec-cli/internal/config"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	"github.com/TaylorEdgerton/spec-cli/internal/sandbox"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
@@ -48,6 +49,10 @@ func cmdInit(args []string) error {
 	if _, err := gitutil.EnsureActiveSpecExcluded(root); err != nil {
 		return fmt.Errorf("configure local Git exclusion: %w", err)
 	}
+	installedDefaults, err := config.InstallDefaults()
+	if err != nil {
+		return fmt.Errorf("initialize Spec configuration: %w", err)
+	}
 	workspace, err := state.Register(root)
 	if err != nil {
 		return err
@@ -56,6 +61,14 @@ func cmdInit(args []string) error {
 		fmt.Printf("Initialized Git repository in %s\n", root)
 	}
 	fmt.Printf("Registered workspace %s\n", workspace.ID)
+	if installedDefaults {
+		configurationDirectory, _ := config.Directory()
+		fmt.Printf("Installed default configuration in %s\n", configurationDirectory)
+	}
+	commands, configErr := config.VerificationCommands(root)
+	if configErr == nil && len(commands) == 0 {
+		fmt.Println("Verification is not configured. Run `spec configure` and add verify commands to config.yml.")
+	}
 	if !gitutil.HasBaseline(root) {
 		fmt.Println("Warning: this repository has no baseline commit.")
 		fmt.Println("Review the files and create an initial commit before you run `spec new`.")

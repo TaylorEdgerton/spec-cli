@@ -10,22 +10,24 @@ import (
 )
 
 func cmdPrompt(args []string) error {
-	copyOutput, showInfo := false, false
+	copyOutput, showInfo, includeFiles := false, false, false
 	for _, arg := range args {
 		switch arg {
 		case "--copy":
 			copyOutput = true
 		case "--info":
 			showInfo = true
+		case "--include-files":
+			includeFiles = true
 		default:
-			return fmt.Errorf("usage: spec prompt [--copy] [--info]")
+			return fmt.Errorf("usage: spec prompt [--copy] [--info] [--include-files]")
 		}
 	}
 	root, err := currentRoot()
 	if err != nil {
 		return err
 	}
-	content, info, err := promptbuilder.Build(root)
+	content, info, err := promptbuilder.Build(root, includeFiles)
 	if err != nil {
 		return err
 	}

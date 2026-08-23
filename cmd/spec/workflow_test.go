@@ -38,4 +38,14 @@ func TestInitUsesLocalGitExcludeAndExternalState(t *testing.T) {
 	if _, err := state.Load(root); err != nil {
 		t.Fatal(err)
 	}
+	for _, path := range []string{
+		filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "config.yml"),
+		filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "templates", "readme.md"),
+		filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "templates", "adr.md"),
+		filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "templates", "runbook.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("configuration file %s: %v", path, err)
+		}
+	}
 }

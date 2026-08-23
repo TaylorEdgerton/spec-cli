@@ -63,19 +63,32 @@ func cmdREADME(args []string) error {
 }
 
 func cmdRunbook(args []string) error {
-	if err := noArgs(args, "spec runbook"); err != nil {
-		return err
-	}
 	root, err := currentRoot()
 	if err != nil {
 		return err
 	}
-	path, created, output, err := documents.Runbook(root)
+	if len(args) == 0 {
+		paths, err := documents.Runbooks(root)
+		if err != nil {
+			return err
+		}
+		if len(paths) == 0 {
+			fmt.Println("No runbooks found.")
+		} else {
+			fmt.Println("Runbooks:")
+			for _, path := range paths {
+				fmt.Printf("  %s\n", path)
+			}
+		}
+		fmt.Println("Create or update one with: spec runbook \"Scenario title\"")
+		return nil
+	}
+	path, created, output, err := documents.Runbook(root, strings.Join(args, " "))
 	if err != nil {
 		return err
 	}
 	if created {
-		fmt.Printf("Created %s\n", path)
+		fmt.Printf("Created %s\n", displayPath(path))
 		return nil
 	}
 	if workspace, loadErr := state.Load(root); loadErr == nil {

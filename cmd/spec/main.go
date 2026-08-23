@@ -17,13 +17,14 @@ type command struct {
 
 var commands = []command{
 	{"init", "register the current Git workspace", cmdInit},
+	{"configure", "open global configuration and templates", cmdConfigure},
 	{"new", "create and activate a change specification", cmdNew},
 	{"prompt", "create a provider-neutral engineering prompt", cmdPrompt},
 	{"verify", "run deterministic project checks", cmdVerify},
 	{"done", "finish the active change", cmdDone},
 	{"adr", "create an architecture decision record", cmdADR},
 	{"readme", "create or prepare README.md in the current directory", cmdREADME},
-	{"runbook", "create or prepare the project runbook", cmdRunbook},
+	{"runbook", "list or prepare scenario runbooks", cmdRunbook},
 	{"sandbox", "run the workspace in Docker Sandbox", cmdSandbox},
 	{"usage", "report AI usage for the active Spec sandbox", cmdUsage},
 	{"check", "report workspace readiness", cmdCheck},
