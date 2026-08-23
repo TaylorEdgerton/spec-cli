@@ -76,20 +76,6 @@ func cmdInit(args []string) error {
 	return nil
 }
 
-func cmdNew(args []string) error {
-	root, err := currentRoot()
-	if err != nil {
-		return fmt.Errorf("Git repository is required; run `spec init`")
-	}
-	path, err := change.New(root, strings.Join(args, " "), time.Now())
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Created active specification: %s\n", path)
-	fmt.Println("Edit the specification, then run `spec prompt`.")
-	return nil
-}
-
 func cmdVerify(args []string) error {
 	if err := noArgs(args, "spec verify"); err != nil {
 		return err

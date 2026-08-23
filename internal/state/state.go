@@ -215,6 +215,14 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
 	return workspace.saveMetadata()
 }
 
+func (workspace *Workspace) UpdateTitle(title string) error {
+	if !workspace.Active {
+		return fmt.Errorf("no active change; run `spec new`")
+	}
+	workspace.Title = strings.TrimSpace(title)
+	return workspace.saveMetadata()
+}
+
 func (workspace *Workspace) Abandon() error {
 	for _, name := range []string{"prompt.md", "verification.json"} {
 		if err := os.Remove(filepath.Join(workspace.Dir, name)); err != nil && !os.IsNotExist(err) {

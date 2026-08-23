@@ -14,6 +14,16 @@ import (
 
 const ActiveFilename = ".spec.md"
 
+type GuidedSpec struct {
+	Change              string
+	Reason              string
+	Outcome             string
+	MustNotBreak        string
+	ImportantConstraint string
+	RelevantFiles       []string
+	AcceptanceCriteria  []string
+}
+
 func ActivePath(root string) string {
 	return filepath.Join(root, ActiveFilename)
 }
@@ -70,6 +80,108 @@ func New(root, title string, now time.Time) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func Populate(root string, guided GuidedSpec) error {
+	workspace, err := state.Load(root)
+	if err != nil {
+		return err
+	}
+	if !workspace.Active {
+		return fmt.Errorf("no active change; run `spec new`")
+	}
+	path := ActivePath(root)
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(guidedMarkdown(guided)), 0o644); err != nil {
+		return err
+	}
+	return workspace.UpdateTitle(guided.Change)
+}
+
+func AcceptanceCriteriaPrompt() string {
+	return "Read and follow `.spec.md`.\n" +
+		"Suggest concise, measurable acceptance criteria for the active change.\n" +
+		"Update only the `## Acceptance Criteria` section in `.spec.md`.\n" +
+		"Write each criterion as an unchecked Markdown task item (`- [ ]`).\n" +
+		"Do not change application code, tests, dependencies, or configuration.\n"
+}
+
+func guidedMarkdown(guided GuidedSpec) string {
+	guided.Change = strings.TrimSpace(guided.Change)
+	heading := guided.Change
+	if heading == "" {
+		heading = "Change"
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "# %s\n\n", heading)
+	writeSection(&builder, "Intent", firstNonEmpty(guided.Reason, guided.Change))
+	writeSection(&builder, "Scope", guided.Change)
+	constraints := []string{}
+	if value := strings.TrimSpace(guided.MustNotBreak); value != "" {
+		constraints = append(constraints, "Must not break: "+value)
+	}
+	if value := strings.TrimSpace(guided.ImportantConstraint); value != "" {
+		constraints = append(constraints, value)
+	}
+	writeListSection(&builder, "Constraints", constraints)
+	criteria := guided.AcceptanceCriteria
+	if len(criteria) == 0 {
+		if value := strings.TrimSpace(guided.Outcome); value != "" {
+			criteria = []string{value}
+		}
+	}
+	writeTaskSection(&builder, "Acceptance Criteria", criteria)
+	files := make([]string, 0, len(guided.RelevantFiles))
+	for _, file := range guided.RelevantFiles {
+		if file = strings.TrimSpace(file); file != "" {
+			files = append(files, "`"+file+"`")
+		}
+	}
+	writeListSection(&builder, "Relevant Files", files)
+	builder.WriteString("## Notes\n")
+	return builder.String()
+}
+
+func writeSection(builder *strings.Builder, heading, value string) {
+	fmt.Fprintf(builder, "## %s\n\n", heading)
+	if value = strings.TrimSpace(value); value != "" {
+		builder.WriteString(value)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\n")
+}
+
+func writeListSection(builder *strings.Builder, heading string, values []string) {
+	fmt.Fprintf(builder, "## %s\n\n", heading)
+	for _, value := range values {
+		fmt.Fprintf(builder, "- %s\n", value)
+	}
+	if len(values) > 0 {
+		builder.WriteString("\n")
+	}
+}
+
+func writeTaskSection(builder *strings.Builder, heading string, values []string) {
+	fmt.Fprintf(builder, "## %s\n\n", heading)
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			fmt.Fprintf(builder, "- [ ] %s\n", value)
+		}
+	}
+	if len(values) > 0 {
+		builder.WriteString("\n")
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func Done(root, summary string, now time.Time) (state.History, error) {

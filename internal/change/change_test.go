@@ -154,6 +154,61 @@ func TestNewRecoversAfterManualRemoval(t *testing.T) {
 	}
 }
 
+func TestPopulateWritesGuidedSpecWithUncheckedCriteria(t *testing.T) {
+	root := committedRepo(t)
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	path, err := New(root, "Fix reconnect handling", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guided := GuidedSpec{
+		Change:              "Fix reconnect handling",
+		Reason:              "Connections do not recover after an outage.",
+		Outcome:             "The application reconnects automatically.",
+		MustNotBreak:        "Health checks remain responsive.",
+		ImportantConstraint: "Do not change the database library.",
+		RelevantFiles:       []string{"src/db/database.go", "tests/test_database.go"},
+		AcceptanceCriteria: []string{
+			"The application reconnects automatically after a temporary outage",
+			"An application restart is not required",
+		},
+	}
+	if err := Populate(root, guided); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, expected := range []string{
+		"# Fix reconnect handling",
+		"## Intent\n\nConnections do not recover after an outage.",
+		"- Must not break: Health checks remain responsive.",
+		"- Do not change the database library.",
+		"- [ ] The application reconnects automatically after a temporary outage",
+		"- [ ] An application restart is not required",
+		"- `src/db/database.go`",
+		"- `tests/test_database.go`",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("guided specification does not contain %q:\n%s", expected, content)
+		}
+	}
+	if strings.Contains(content, "- [x]") {
+		t.Fatalf("criteria were incorrectly saved as completed:\n%s", content)
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Title != guided.Change {
+		t.Fatalf("workspace title = %q", workspace.Title)
+	}
+}
+
 func TestSectionSummaryUsesIntent(t *testing.T) {
 	content := "# Change\n\n## Intent\n\nFix reconnect handling.\n\n## Scope\n\nDatabase only.\n"
 	if got := sectionSummary(content, "Intent"); got != "Fix reconnect handling." {
