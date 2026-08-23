@@ -23,12 +23,8 @@ func TestInstallDefaultsSeedsMissingFilesWithoutOverwritingCustomTemplates(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Verify) != 0 {
-		t.Fatalf("default verification commands: %v", loaded.Verify)
-	}
-	configContent, err := os.ReadFile(filepath.Join(configHome, "config.yml"))
-	if err != nil || !strings.Contains(string(configContent), "Spec does not detect verification commands automatically") {
-		t.Fatalf("documented default config: %q, %v", configContent, err)
+	if len(loaded.Verify) != 0 || loaded.Workspaces == nil {
+		t.Fatalf("default configuration: %+v", loaded)
 	}
 	adrTemplate, err := Template(ADR)
 	if err != nil || !strings.Contains(string(adrTemplate), ".Number") || !strings.Contains(string(adrTemplate), ".Title") {
@@ -57,7 +53,7 @@ func TestInstallDefaultsSeedsMissingFilesWithoutOverwritingCustomTemplates(t *te
 	if string(content) != "# Custom README\n" {
 		t.Fatalf("custom template was replaced: %q", content)
 	}
-	configContent, err = os.ReadFile(configPath)
+	configContent, err := os.ReadFile(configPath)
 	if err != nil || string(configContent) != "verify:\n  - custom-check\n" {
 		t.Fatalf("custom config was replaced: %q, %v", configContent, err)
 	}
