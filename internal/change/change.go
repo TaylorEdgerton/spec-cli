@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
@@ -72,6 +73,10 @@ func New(root, title string, now time.Time) (string, error) {
 }
 
 func Done(root, summary string, now time.Time) (state.History, error) {
+	return DoneWithUsage(root, summary, now, nil)
+}
+
+func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) (state.History, error) {
 	workspace, err := state.Load(root)
 	if err != nil {
 		return state.History{}, err
@@ -110,7 +115,7 @@ func Done(root, summary string, now time.Time) (state.History, error) {
 	record := state.History{
 		Title: title, StartedAt: workspace.StartedAt, BaseSHA: workspace.BaseSHA,
 		FinishedAt: now.UTC(), EndSHA: end, ChangedFiles: files,
-		Verification: historyVerification, Summary: strings.TrimSpace(summary),
+		Verification: historyVerification, Summary: strings.TrimSpace(summary), AIUsage: usage,
 	}
 	record, err = workspace.Finish(record, current, path)
 	if err != nil {

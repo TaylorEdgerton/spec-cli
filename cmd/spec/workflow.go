@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
+	"github.com/TaylorEdgerton/spec-cli/internal/sandbox"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
 )
@@ -97,7 +99,19 @@ func cmdDone(args []string) error {
 	if err != nil {
 		return err
 	}
-	record, err := change.Done(root, strings.Join(args, " "), time.Now())
+	workspace, err := state.Load(root)
+	if err != nil {
+		return err
+	}
+	var session *state.SandboxSession
+	var finalUsage *aiusage.Summary
+	if workspace.SandboxSession != nil {
+		copy := *workspace.SandboxSession
+		session = &copy
+		usage := sandbox.Usage(root, time.Now())
+		finalUsage = &usage
+	}
+	record, err := change.DoneWithUsage(root, strings.Join(args, " "), time.Now(), finalUsage)
 	if err != nil {
 		return err
 	}
@@ -110,6 +124,16 @@ func cmdDone(args []string) error {
 	}
 	if record.EndSHA == record.BaseSHA && len(record.ChangedFiles) > 0 {
 		fmt.Println("The changes are not in a new commit.")
+	}
+	if record.AIUsage != nil {
+		if record.AIUsage.Available {
+			fmt.Println("Captured final AI usage from the Spec sandbox.")
+		} else {
+			fmt.Printf("AI usage unavailable: %s\n", record.AIUsage.UnavailableReason)
+		}
+		if err := sandbox.StopTelemetry(session); err != nil {
+			fmt.Println("Warning: the sandbox telemetry collector could not be stopped.")
+		}
 	}
 	return nil
 }

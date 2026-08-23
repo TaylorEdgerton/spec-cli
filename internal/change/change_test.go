@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
@@ -56,7 +57,14 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "script.py"), []byte("print('two')\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	record, err := Done(root, "complete", time.Now())
+	finalUsage := &aiusage.Summary{
+		Available: true,
+		Usage: []aiusage.AIUsage{{
+			Provider: "Codex", Model: "gpt-5.6-sol", InputTokens: 120, OutputTokens: 30, Requests: 2,
+		}},
+		SandboxDurationSeconds: 90,
+	}
+	record, err := DoneWithUsage(root, "complete", time.Now(), finalUsage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +78,27 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	if workspace.Active {
 		t.Fatal("workspace stayed active")
 	}
+	if workspace.SandboxSession != nil {
+		t.Fatalf("sandbox session was not cleared: %+v", workspace.SandboxSession)
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("active specification remains: %v", err)
 	}
 	if record.SpecArchive == "" {
 		t.Fatal("archive path is empty")
+	}
+	if record.AIUsage == nil || !record.AIUsage.Available || record.AIUsage.Usage[0].InputTokens != 120 {
+		t.Fatalf("AI usage = %+v", record.AIUsage)
+	}
+	history, err := os.ReadFile(filepath.Join(workspace.Dir, "history.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(history), `"ai_usage"`) || !strings.Contains(string(history), `"input_tokens":120`) {
+		t.Fatalf("history does not contain aggregate AI usage: %s", history)
+	}
+	if strings.Contains(string(history), "prompt text must remain private") {
+		t.Fatalf("history contains raw telemetry content: %s", history)
 	}
 	archived, err := os.ReadFile(filepath.Join(workspace.Dir, filepath.FromSlash(record.SpecArchive)))
 	if err != nil {

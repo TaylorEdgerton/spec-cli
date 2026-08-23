@@ -25,6 +25,7 @@ var commands = []command{
 	{"readme", "create or prepare README.md for an update", cmdREADME},
 	{"runbook", "create or prepare the project runbook", cmdRunbook},
 	{"sandbox", "run the workspace in Docker Sandbox", cmdSandbox},
+	{"usage", "report AI usage for the active Spec sandbox", cmdUsage},
 	{"check", "report workspace readiness", cmdCheck},
 	{"uninstall", "remove Spec from this computer", cmdUninstall},
 }
