@@ -41,6 +41,7 @@ spec adr "Title"          Create an ADR in docs/adr/.
 spec readme               Create or prepare README.md for an update.
 spec runbook              Create or prepare docs/runbook.md for an update.
 spec sandbox [agent]      Run the Git workspace with Docker Sandbox.
+spec usage                Report AI usage for the active Spec sandbox.
 spec check                Report workspace readiness and warnings.
 spec uninstall            Remove Spec and installer-owned PATH setup.
 ```
@@ -70,7 +71,9 @@ Add file paths as list items in `.spec.md` under `## Relevant Files`. The `spec 
 
 ## Docker Sandbox
 
-`spec sandbox` scans the complete workspace for sensitive file names to outline just in case, including Git-ignored and untracked files. The command then uses Docker's `sbx run` command with the Git working tree.
+`spec sandbox` scans the complete workspace for sensitive file names to outline just in case, including Git-ignored and untracked files. The command then uses Docker's `sbx` command with the Git working tree.
+
+For `claude`, `codex`, `copilot`, and `gemini` sandboxes, Spec enables native OpenTelemetry metrics and sends them to a collector inside the sandbox. Run `spec usage` to see the current aggregate. `spec done` stores only the final provider/model token and request totals in external Spec history.
 
 ## Development
 
