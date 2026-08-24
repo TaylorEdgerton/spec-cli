@@ -161,6 +161,8 @@ func cmdCheck(args []string) error {
 	if specErr != nil && !os.IsNotExist(specErr) {
 		fmt.Printf("FAIL active specification cannot be inspected: %v\n", specErr)
 		ok = false
+	} else if registered && workspace.Active && workspace.Setup != nil && !specExists {
+		fmt.Printf("INFO Spec setup is in progress: %s\n", workspace.Setup.Stage)
 	} else if specExists && registered && workspace.Active {
 		fmt.Println("INFO active specification: .spec.md")
 	} else if !specExists && registered && !workspace.Active {
