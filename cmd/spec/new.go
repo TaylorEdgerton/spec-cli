@@ -4,65 +4,32 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
+	"github.com/TaylorEdgerton/spec-cli/internal/config"
+	promptbuilder "github.com/TaylorEdgerton/spec-cli/internal/prompt"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
+	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
+	"github.com/charmbracelet/x/term"
 )
-
-type newSpecStage int
 
 const (
-	newSpecChoice newSpecStage = iota
-	newSpecQuestion
-	newSpecCriteria
-	newSpecCriterionInput
+	setupChange       = "change"
+	setupOutcome      = "outcome"
+	setupLimits       = "limits"
+	setupCriteria     = "criteria"
+	setupVerification = "verification"
+	setupVerifyChange = "change-verification"
+	setupVerifyWait   = "waiting-for-verification"
+	setupBaseline     = "baseline"
+	setupReview       = "review"
 )
-
-type newSpecAction int
-
-const (
-	newSpecSkipped newSpecAction = iota
-	newSpecGuided
-	newSpecAskAI
-)
-
-type criterion struct {
-	text     string
-	included bool
-}
-
-type newSpecModel struct {
-	title    string
-	askTitle bool
-	stage    newSpecStage
-	action   newSpecAction
-	cursor   int
-	question int
-	input    string
-	inputPos int
-	answers  []string
-	criteria []criterion
-	editing  int
-	done     bool
-}
-
-var guidedQuestions = []string{
-	"Why does this change need to be made?",
-	"What should work when you're finished?",
-	"What must not break?",
-	"Any important constraints?",
-	"Relevant files? Separate multiple paths with commas.",
-}
 
 func cmdNew(args []string) error {
-	interactive := false
-	if info, err := os.Stdin.Stat(); err == nil {
-		interactive = info.Mode()&os.ModeCharDevice != 0
-	}
-	return runNew(args, os.Stdin, os.Stdout, interactive)
+	return runNew(args, os.Stdin, os.Stdout, terminalInput(os.Stdin))
 }
 
 func runNew(args []string, input io.Reader, output io.Writer, interactive bool) error {
@@ -71,411 +38,487 @@ func runNew(args []string, input io.Reader, output io.Writer, interactive bool) 
 		return fmt.Errorf("Git repository is required; run `spec init`")
 	}
 	title := strings.TrimSpace(strings.Join(args, " "))
-	path, err := change.New(root, title, time.Now())
-	if err != nil {
-		return err
-	}
 	if !interactive {
-		printNewCreated(output, path)
-		return nil
-	}
-
-	program := tea.NewProgram(newNewSpecModel(title), tea.WithInput(input), tea.WithOutput(output))
-	final, err := program.Run()
-	if err != nil {
-		return err
-	}
-	model, ok := final.(*newSpecModel)
-	if !ok {
-		return fmt.Errorf("interactive Spec returned an unexpected result")
-	}
-	switch model.action {
-	case newSpecGuided:
-		if err := change.Populate(root, model.guidedSpec()); err != nil {
-			return err
-		}
-	case newSpecAskAI:
-		prompt := change.AcceptanceCriteriaPrompt()
-		workspace, err := state.Load(root)
+		path, err := change.New(root, title, time.Now())
 		if err != nil {
 			return err
 		}
-		if err := workspace.SavePrompt(prompt); err != nil {
-			return err
-		}
 		printNewCreated(output, path)
-		fmt.Fprintln(output, "\nAI prompt:")
-		fmt.Fprintln(output)
-		fmt.Fprint(output, prompt)
 		return nil
 	}
-	printNewCreated(output, path)
+	setup, err := change.BeginSetup(root, title, time.Now())
+	if err != nil {
+		return err
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		return err
+	}
+	if setup.Editing {
+		if _, statErr := os.Stat(change.ActivePath(root)); os.IsNotExist(statErr) {
+			choice, stopped, chooseErr := runChoice(input, output, "Active specification is missing", "`.spec.md` was deleted during a paused CLI edit. Spec can recreate the guided sections from saved edit state. Manually added file content cannot be restored.", []string{
+				"Recreate .spec.md from saved edit", "Start a replacement Spec", "Exit",
+			})
+			if chooseErr != nil || stopped || choice == 2 {
+				return chooseErr
+			}
+			if choice == 1 {
+				if err := workspace.Abandon(); err != nil {
+					return err
+				}
+				return runNew(nil, input, output, true)
+			}
+			path, err := change.CreateSetup(root, setup)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(output, "Recreated active specification from saved edit: %s\n", path)
+			fmt.Fprintln(output, "Run `spec` to continue. Verification must run again.")
+			return nil
+		} else if statErr != nil {
+			return statErr
+		}
+	}
+	if _, statErr := os.Stat(change.ActivePath(root)); statErr == nil && workspace.Setup != nil && !setup.Editing {
+		if err := workspace.CompleteSetup(setup.Title); err != nil {
+			return err
+		}
+		return offerImplementationPrompt(root, input, output)
+	}
+
+	for {
+		switch setup.Stage {
+		case setupChange:
+			value, back, stopped, err := runTextPrompt(input, output, "New Spec", "What are you changing?", firstSetupInput(setup.Input, setup.Title), false, setup.Editing)
+			if err != nil {
+				return err
+			}
+			if stopped {
+				setup.Input = value
+				return saveAndExit(root, setup, output)
+			}
+			if back {
+				setup.Title, setup.Input, setup.Stage = value, "", setupReview
+				continue
+			}
+			setup.Title, setup.Input, setup.Stage = value, "", setupOutcome
+		case setupOutcome:
+			value, back, stopped, err := runTextPrompt(input, output, "New Spec", "What should happen when finished?", firstSetupInput(setup.Input, setup.Outcome), false, true)
+			if err != nil {
+				return err
+			}
+			if stopped {
+				setup.Input = value
+				return saveAndExit(root, setup, output)
+			}
+			if back {
+				setup.Outcome, setup.Input, setup.Stage = value, "", setupChange
+				continue
+			}
+			setup.Outcome, setup.Input, setup.Stage = value, "", setupLimits
+		case setupLimits:
+			value, back, stopped, err := runTextPrompt(input, output, "New Spec", "Are there any limits on the solution? (optional)", firstSetupInput(setup.Input, setup.Limits), true, true)
+			if err != nil {
+				return err
+			}
+			if stopped {
+				setup.Input = value
+				return saveAndExit(root, setup, output)
+			}
+			if back {
+				setup.Limits, setup.Input, setup.Stage = value, "", setupOutcome
+				continue
+			}
+			setup.Limits, setup.Input, setup.Stage = value, "", setupCriteria
+		case setupCriteria:
+			if len(setup.Criteria) == 0 && strings.TrimSpace(setup.Outcome) != "" {
+				setup.Criteria = []state.SetupCriterion{{Text: setup.Outcome, Included: true}}
+			}
+			criteria, back, stopped, err := runSetupCriteria(input, output, setup.Criteria)
+			if err != nil {
+				return err
+			}
+			setup.Criteria = criteria
+			if stopped {
+				return saveAndExit(root, setup, output)
+			}
+			if back {
+				setup.Stage = setupLimits
+				continue
+			}
+			if !hasIncludedCriteria(setup.Criteria) {
+				fmt.Fprintln(output, "At least one success criterion is required.")
+				if err := saveSetup(root, setup); err != nil {
+					return err
+				}
+				continue
+			}
+			setup.Stage = setupVerification
+		case setupVerification, setupVerifyChange, setupVerifyWait:
+			ready, stopped, paused, err := configureVerification(root, &setup, input, output)
+			if err != nil {
+				return err
+			}
+			if stopped {
+				return saveAndExit(root, setup, output)
+			}
+			if paused {
+				return nil
+			}
+			if !ready {
+				continue
+			}
+			setup.Stage = setupBaseline
+		case setupBaseline:
+			commands, err := config.VerificationCommands(root)
+			if err != nil {
+				return err
+			}
+			choice, stopped, err := runChoice(input, output, "Verification", "Configured checks:\n"+formatCommands(commands), []string{
+				"Run verification baseline", "Continue without a baseline", "Change verification", "Back to success criteria", "Save and exit",
+			})
+			if err != nil {
+				return err
+			}
+			if stopped || choice == 4 {
+				return saveAndExit(root, setup, output)
+			}
+			switch choice {
+			case 0:
+				result, runErr := verifyrun.Run(root, time.Now())
+				if runErr != nil {
+					fmt.Fprintln(output, "Verification baseline: FAIL")
+				} else {
+					fmt.Fprintf(output, "Verification baseline: PASS (%d check(s))\n", len(result.Commands))
+				}
+				setup.Stage = setupReview
+			case 1:
+				setup.Stage = setupReview
+			case 2:
+				setup.Stage = setupVerifyChange
+			case 3:
+				setup.Stage = setupCriteria
+			}
+		case setupReview:
+			preview := formatSetupSummary(setup)
+			saveLabel := "Create .spec.md"
+			if setup.Editing {
+				saveLabel = "Save Spec changes"
+			}
+			choice, stopped, err := runChoice(input, output, "Review Spec", preview, []string{
+				saveLabel, "Edit change", "Edit expected outcome", "Edit limits", "Edit success criteria", "Change verification", "Save and exit",
+			})
+			if err != nil {
+				return err
+			}
+			if stopped || choice == 6 {
+				return saveAndExit(root, setup, output)
+			}
+			switch choice {
+			case 1:
+				setup.Stage = setupChange
+			case 2:
+				setup.Stage = setupOutcome
+			case 3:
+				setup.Stage = setupLimits
+			case 4:
+				setup.Stage = setupCriteria
+			case 5:
+				setup.Stage = setupVerifyChange
+			default:
+				if strings.TrimSpace(setup.Title) == "" {
+					setup.Stage = setupChange
+					continue
+				}
+				if strings.TrimSpace(setup.Outcome) == "" {
+					setup.Stage = setupOutcome
+					continue
+				}
+				if !hasIncludedCriteria(setup.Criteria) {
+					setup.Stage = setupCriteria
+					continue
+				}
+				editing := setup.Editing
+				path, err := change.SaveSetup(root, setup)
+				if err != nil {
+					return err
+				}
+				if editing {
+					fmt.Fprintf(output, "Updated active specification: %s\n", path)
+				} else {
+					printNewCreated(output, path)
+				}
+				return offerImplementationPrompt(root, input, output)
+			}
+		default:
+			setup.Stage = setupChange
+		}
+		if err := saveSetup(root, setup); err != nil {
+			return err
+		}
+	}
+}
+
+func configureVerification(root string, setup *state.Setup, input io.Reader, output io.Writer) (bool, bool, bool, error) {
+	commands, err := config.VerificationCommands(root)
+	if err != nil {
+		return false, false, false, err
+	}
+	if len(commands) > 0 && setup.Stage != setupVerifyChange {
+		fmt.Fprintln(output, "Verification")
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, formatCommands(commands))
+		fmt.Fprintln(output, "Using existing workspace verification.")
+		return true, false, false, nil
+	}
+	selected, waiting, stopped, err := selectVerification(root, input, output, verificationPrompt(root, *setup, verifyrun.Detect(root)), &setup.Input)
+	if err != nil || stopped {
+		return false, stopped, false, err
+	}
+	if waiting == "back" {
+		setup.Input = ""
+		if setup.Editing {
+			setup.Stage = setupReview
+		} else {
+			setup.Stage = setupCriteria
+		}
+		return false, false, false, nil
+	}
+	if waiting != "" {
+		setup.Stage = setupVerifyWait
+		if waiting == "ai" {
+			setup.Stage = setupVerifyChange
+		}
+		if err := saveSetup(root, *setup); err != nil {
+			return false, false, false, err
+		}
+		fmt.Fprintln(output, "Setup saved. Run `spec` to resume after verification is prepared.")
+		return false, false, true, nil
+	}
+	if err := saveVerificationCommands(root, selected); err != nil {
+		return false, false, false, err
+	}
+	setup.Input = ""
+	return true, false, false, nil
+}
+
+func selectVerification(root string, input io.Reader, output io.Writer, aiPrompt string, draft *string) ([]string, string, bool, error) {
+	for {
+		detected := verifyrun.Detect(root)
+		reusable, err := config.ReusableVerification(root)
+		if err != nil {
+			return nil, "", false, err
+		}
+		var items, actions []string
+		if len(detected) > 0 {
+			items = append(items, "Use detected project checks: "+strings.Join(detected, ", "))
+			actions = append(actions, "detected")
+		}
+		items = append(items, "Ask AI to create verification", "Enter a verification command")
+		actions = append(actions, "ai", "enter")
+		if len(reusable) > 0 {
+			items = append(items, "Reuse verification from another workspace")
+			actions = append(actions, "reuse")
+		}
+		items = append(items, "Edit configuration manually", "Back", "Save and exit")
+		actions = append(actions, "edit", "back", "exit")
+		selected, stopped, err := runChoice(input, output, "Verification is required but is not configured.", "How should this change be verified?", items)
+		if err != nil || stopped || actions[selected] == "exit" {
+			return nil, "", stopped || actions[selected] == "exit", err
+		}
+		switch actions[selected] {
+		case "back":
+			return nil, "back", false, nil
+		case "detected":
+			return detected, "", false, nil
+		case "enter":
+			command, back, interrupted, err := runTextPrompt(input, output, "Verification", "Enter one deterministic verification command", *draft, false, true)
+			*draft = command
+			if err != nil || interrupted {
+				return nil, "", interrupted, err
+			}
+			if back {
+				continue
+			}
+			return []string{command}, "", false, nil
+		case "reuse":
+			labels := make([]string, len(reusable))
+			for index, option := range reusable {
+				labels[index] = option.Root + ": " + strings.Join(option.Commands, ", ")
+			}
+			choice, interrupted, err := runChoice(input, output, "Reuse verification", "Choose a workspace", labels)
+			if err != nil || interrupted {
+				return nil, "", interrupted, err
+			}
+			return reusable[choice].Commands, "", false, nil
+		case "ai":
+			workspace, err := state.Load(root)
+			if err != nil {
+				return nil, "", false, err
+			}
+			if err := workspace.SavePrompt(aiPrompt); err != nil {
+				return nil, "", false, err
+			}
+			choice, interrupted, err := runChoice(input, output, "AI verification prompt", "Create permanent project tests, then run `spec` to resume.", []string{"Copy prompt", "Print prompt", "Back"})
+			if err != nil || interrupted {
+				return nil, "", interrupted, err
+			}
+			if choice == 2 {
+				continue
+			}
+			if choice == 0 {
+				if err := copyText(aiPrompt); err != nil {
+					return nil, "", false, err
+				}
+				fmt.Fprintln(output, "Prompt copied to the clipboard.")
+			} else {
+				fmt.Fprintln(output, aiPrompt)
+			}
+			return nil, "ai", false, nil
+		case "edit":
+			if err := saveVerificationCommands(root, nil); err != nil {
+				return nil, "", false, err
+			}
+			path, err := openConfigurationDirectory()
+			if err != nil {
+				return nil, "", false, err
+			}
+			fmt.Fprintf(output, "Opened configuration folder: %s\n", path)
+			return nil, "edit", false, nil
+		}
+	}
+}
+
+func saveVerificationCommands(root string, commands []string) error {
+	workspace, err := state.Load(root)
+	if err != nil {
+		return err
+	}
+	return workspace.SetVerificationCommands(commands)
+}
+
+func offerImplementationPrompt(root string, input io.Reader, output io.Writer) error {
+	choice, stopped, err := runChoice(input, output, "Spec is ready.", "Choose the next action.", []string{"Copy implementation prompt", "Print implementation prompt", "Finish"})
+	if err != nil || stopped || choice == 2 {
+		return err
+	}
+	content, _, err := promptbuilder.Build(root, false)
+	if err != nil {
+		return err
+	}
+	if choice == 0 {
+		if err := copyText(content); err != nil {
+			return err
+		}
+		fmt.Fprintln(output, "Prompt copied to the clipboard.")
+	} else {
+		fmt.Fprint(output, content)
+	}
 	return nil
 }
 
-func newNewSpecModel(title string) *newSpecModel {
-	title = strings.TrimSpace(title)
-	return &newSpecModel{title: title, askTitle: title == "", stage: newSpecChoice, editing: -1}
-}
-
-func (model *newSpecModel) Init() tea.Cmd { return nil }
-
-func (model *newSpecModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := message.(tea.InterruptMsg); ok {
-		model.done, model.action = true, newSpecSkipped
-		return model, tea.Quit
-	}
-	switch message := message.(type) {
-	case tea.PasteMsg:
-		if model.stage == newSpecQuestion || model.stage == newSpecCriterionInput {
-			model.insertInput(message.Content)
-		}
-		return model, nil
-	case tea.KeyPressMsg:
-		if message.Keystroke() == "ctrl+c" {
-			model.done, model.action = true, newSpecSkipped
-			return model, tea.Quit
-		}
-		switch model.stage {
-		case newSpecChoice:
-			return model.updateChoice(message)
-		case newSpecQuestion:
-			return model.updateQuestion(message)
-		case newSpecCriteria:
-			return model.updateCriteria(message)
-		case newSpecCriterionInput:
-			return model.updateCriterionInput(message)
-		}
-	}
-	return model, nil
-}
-
-func (model *newSpecModel) updateChoice(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch message.Keystroke() {
-	case "up", "k":
-		model.cursor = wrap(model.cursor-1, 3)
-	case "down", "j":
-		model.cursor = wrap(model.cursor+1, 3)
-	case "esc":
-		model.action, model.done = newSpecSkipped, true
-		return model, tea.Quit
-	case "enter":
-		switch model.cursor {
-		case 0:
-			model.stage, model.cursor = newSpecQuestion, 0
-		case 1:
-			model.action, model.done = newSpecAskAI, true
-			return model, tea.Quit
-		case 2:
-			model.action, model.done = newSpecSkipped, true
-			return model, tea.Quit
-		}
-	}
-	return model, nil
-}
-
-func (model *newSpecModel) updateQuestion(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch message.Keystroke() {
-	case "esc":
-		model.action, model.done = newSpecSkipped, true
-		return model, tea.Quit
-	case "enter":
-		model.answers = append(model.answers, strings.TrimSpace(model.input))
-		if model.askTitle && model.question == 0 {
-			model.title = strings.TrimSpace(model.input)
-		}
-		model.input, model.inputPos = "", 0
-		model.question++
-		if model.question == len(model.questionPrompts()) {
-			model.prepareCriteria()
-		}
-	case "backspace":
-		model.deleteBeforeCursor()
-	case "delete":
-		model.deleteAtCursor()
-	case "left":
-		model.moveInputCursor(-1)
-	case "right":
-		model.moveInputCursor(1)
-	case "home", "ctrl+a":
-		model.inputPos = 0
-	case "end", "ctrl+e":
-		model.inputPos = len([]rune(model.input))
-	default:
-		model.insertInput(message.Key().Text)
-	}
-	return model, nil
-}
-
-func (model *newSpecModel) updateCriteria(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	itemCount := len(model.criteria) + 2
-	switch message.Keystroke() {
-	case "up", "k":
-		model.cursor = wrap(model.cursor-1, itemCount)
-	case "down", "j":
-		model.cursor = wrap(model.cursor+1, itemCount)
-	case "a":
-		model.startCriterionInput(-1)
-	case "e":
-		if model.cursor < len(model.criteria) {
-			model.startCriterionInput(model.cursor)
-		}
-	case "d", "delete":
-		if model.cursor < len(model.criteria) {
-			model.criteria = append(model.criteria[:model.cursor], model.criteria[model.cursor+1:]...)
-			if model.cursor >= len(model.criteria)+2 {
-				model.cursor = len(model.criteria) + 1
-			}
-		}
-	case "esc":
-		model.action, model.done = newSpecSkipped, true
-		return model, tea.Quit
-	case "space", "enter":
-		switch {
-		case model.cursor < len(model.criteria):
-			model.criteria[model.cursor].included = !model.criteria[model.cursor].included
-		case model.cursor == len(model.criteria):
-			model.startCriterionInput(-1)
-		default:
-			model.action, model.done = newSpecGuided, true
-			return model, tea.Quit
-		}
-	}
-	return model, nil
-}
-
-func (model *newSpecModel) updateCriterionInput(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch message.Keystroke() {
-	case "esc":
-		model.stage, model.input, model.inputPos, model.editing = newSpecCriteria, "", 0, -1
-	case "enter":
-		value := strings.TrimSpace(model.input)
-		if value != "" {
-			if model.editing >= 0 {
-				model.criteria[model.editing].text = value
-				model.cursor = model.editing
-			} else {
-				model.criteria = append(model.criteria, criterion{text: value, included: true})
-				model.cursor = len(model.criteria) - 1
-			}
-		}
-		model.stage, model.input, model.inputPos, model.editing = newSpecCriteria, "", 0, -1
-	case "backspace":
-		model.deleteBeforeCursor()
-	case "delete":
-		model.deleteAtCursor()
-	case "left":
-		model.moveInputCursor(-1)
-	case "right":
-		model.moveInputCursor(1)
-	case "home", "ctrl+a":
-		model.inputPos = 0
-	case "end", "ctrl+e":
-		model.inputPos = len([]rune(model.input))
-	default:
-		model.insertInput(message.Key().Text)
-	}
-	return model, nil
-}
-
-func (model *newSpecModel) prepareCriteria() {
-	model.stage, model.cursor = newSpecCriteria, 0
-	for _, value := range []string{model.answer(1), model.answer(2)} {
-		if value = strings.TrimSpace(value); value != "" {
-			model.criteria = append(model.criteria, criterion{text: value, included: true})
-		}
-	}
-}
-
-func (model *newSpecModel) startCriterionInput(index int) {
-	model.stage, model.editing, model.input, model.inputPos = newSpecCriterionInput, index, "", 0
-	if index >= 0 {
-		model.input = model.criteria[index].text
-		model.inputPos = len([]rune(model.input))
-	}
-}
-
-func (model *newSpecModel) guidedSpec() change.GuidedSpec {
-	criteria := make([]string, 0, len(model.criteria))
-	for _, item := range model.criteria {
-		if item.included {
-			criteria = append(criteria, item.text)
-		}
-	}
-	return change.GuidedSpec{
-		Change: model.title, Reason: model.answer(0), Outcome: model.answer(1),
-		MustNotBreak: model.answer(2), ImportantConstraint: model.answer(3),
-		RelevantFiles: splitPaths(model.answer(4)), AcceptanceCriteria: criteria,
-	}
-}
-
-func (model *newSpecModel) answer(index int) string {
-	if model.askTitle {
-		index++
-	}
-	if index < 0 || index >= len(model.answers) {
-		return ""
-	}
-	return model.answers[index]
-}
-
-func (model *newSpecModel) View() tea.View {
-	if model.done {
-		return tea.NewView("")
-	}
-	switch model.stage {
-	case newSpecChoice:
-		return tea.NewView(model.choiceView())
-	case newSpecQuestion:
-		return tea.NewView(model.questionView())
-	case newSpecCriteria:
-		return tea.NewView(model.criteriaView())
-	case newSpecCriterionInput:
-		return tea.NewView(model.criterionInputView())
-	default:
-		return tea.NewView("")
-	}
-}
-
-func (model *newSpecModel) choiceView() string {
-	items := []string{"Add them myself", "Ask AI to suggest them", "Skip for now"}
+func verificationPrompt(root string, setup state.Setup, detected []string) string {
 	var builder strings.Builder
-	builder.WriteString("Acceptance criteria are not defined.\n\n")
-	for index, item := range items {
-		fmt.Fprintf(&builder, "%s %s\n", cursor(index == model.cursor), item)
+	builder.WriteString("Create permanent deterministic tests for this change.\n\n")
+	fmt.Fprintf(&builder, "Change: %s\n", setup.Title)
+	fmt.Fprintf(&builder, "Expected result: %s\n", setup.Outcome)
+	if setup.Limits != "" {
+		fmt.Fprintf(&builder, "Limits: %s\n", setup.Limits)
 	}
-	builder.WriteString("\n↑/↓ move  Enter select  Esc skip\n")
+	builder.WriteString("\nSuccess criteria:\n")
+	for _, criterion := range setup.Criteria {
+		if criterion.Included {
+			fmt.Fprintf(&builder, "- %s\n", criterion.Text)
+		}
+	}
+	if len(detected) > 0 {
+		fmt.Fprintf(&builder, "\nDetected project checks: %s\n", strings.Join(detected, ", "))
+	}
+	if languages := verifyrun.Languages(root); len(languages) > 0 {
+		fmt.Fprintf(&builder, "Detected languages: %s\n", strings.Join(languages, ", "))
+	}
+	builder.WriteString("\nFollow existing project conventions. Add tests to the repository. Do not implement the product change. Return one deterministic command that runs the tests.\n")
 	return builder.String()
 }
 
-func (model *newSpecModel) questionView() string {
+func saveSetup(root string, setup state.Setup) error {
+	workspace, err := state.Load(root)
+	if err != nil {
+		return err
+	}
+	return workspace.SaveSetup(setup)
+}
+
+func saveAndExit(root string, setup state.Setup, output io.Writer) error {
+	if err := saveSetup(root, setup); err != nil {
+		return err
+	}
+	if setup.Editing {
+		fmt.Fprintln(output, "Spec edit saved. Run `spec` to resume.")
+	} else {
+		fmt.Fprintln(output, "Setup saved. Run `spec` to resume.")
+	}
+	return nil
+}
+
+func firstSetupInput(current, saved string) string {
+	if current != "" {
+		return current
+	}
+	return saved
+}
+
+func hasIncludedCriteria(criteria []state.SetupCriterion) bool {
+	for _, criterion := range criteria {
+		if criterion.Included && strings.TrimSpace(criterion.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func formatCommands(commands []string) string {
 	var builder strings.Builder
-	builder.WriteString("New Spec\n\n")
-	if !model.askTitle || model.question > 0 {
-		builder.WriteString("What are you changing?\n> ")
-		if model.title == "" {
-			builder.WriteString("Change")
-		} else {
-			builder.WriteString(model.title)
-		}
-		builder.WriteString("\n\n")
+	for _, command := range commands {
+		builder.WriteString("✓ ")
+		builder.WriteString(command)
+		builder.WriteByte('\n')
 	}
-	fmt.Fprintf(&builder, "%s\n> %s\n\nEnter continue  Esc skip\n", model.questionPrompts()[model.question], model.inputView())
-	return builder.String()
+	return strings.TrimSpace(builder.String())
 }
 
-func (model *newSpecModel) criteriaView() string {
-	var builder strings.Builder
-	builder.WriteString("Acceptance criteria\n\nBased on your answers:\n\n")
-	for index, item := range model.criteria {
-		checked := " "
-		if item.included {
-			checked = "x"
-		}
-		fmt.Fprintf(&builder, "%s [%s] %s\n", cursor(index == model.cursor), checked, item.text)
+func formatSetupSummary(setup state.Setup) string {
+	limits := strings.TrimSpace(setup.Limits)
+	if limits == "" {
+		limits = "none"
 	}
-	addIndex := len(model.criteria)
-	fmt.Fprintf(&builder, "%s + Add criterion\n", cursor(model.cursor == addIndex))
-	fmt.Fprintf(&builder, "%s ✓ Accept and save\n", cursor(model.cursor == addIndex+1))
-	builder.WriteString("\n↑/↓ move  Space/Enter toggle  a add  e edit  d delete  Esc skip\n")
-	return builder.String()
-}
-
-func (model *newSpecModel) criterionInputView() string {
-	action := "Add criterion"
-	if model.editing >= 0 {
-		action = "Edit criterion"
-	}
-	return fmt.Sprintf("%s\n\n> %s\n\nEnter save  Esc cancel\n", action, model.inputView())
-}
-
-func cursor(selected bool) string {
-	if selected {
-		return ">"
-	}
-	return " "
-}
-
-func wrap(value, size int) int {
-	if size <= 0 {
-		return 0
-	}
-	if value < 0 {
-		return size - 1
-	}
-	return value % size
-}
-
-func (model *newSpecModel) questionPrompts() []string {
-	if !model.askTitle {
-		return guidedQuestions
-	}
-	return append([]string{"What are you changing?"}, guidedQuestions...)
-}
-
-func (model *newSpecModel) insertInput(value string) {
-	value = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(value)
-	if value == "" {
-		return
-	}
-	current, inserted := []rune(model.input), []rune(value)
-	model.inputPos = clamp(model.inputPos, 0, len(current))
-	current = append(current[:model.inputPos], append(inserted, current[model.inputPos:]...)...)
-	model.input = string(current)
-	model.inputPos += len(inserted)
-}
-
-func (model *newSpecModel) moveInputCursor(offset int) {
-	model.inputPos = clamp(model.inputPos+offset, 0, len([]rune(model.input)))
-}
-
-func (model *newSpecModel) deleteBeforeCursor() {
-	current := []rune(model.input)
-	model.inputPos = clamp(model.inputPos, 0, len(current))
-	if model.inputPos == 0 {
-		return
-	}
-	model.input = string(append(current[:model.inputPos-1], current[model.inputPos:]...))
-	model.inputPos--
-}
-
-func (model *newSpecModel) deleteAtCursor() {
-	current := []rune(model.input)
-	model.inputPos = clamp(model.inputPos, 0, len(current))
-	if model.inputPos == len(current) {
-		return
-	}
-	model.input = string(append(current[:model.inputPos], current[model.inputPos+1:]...))
-}
-
-func (model *newSpecModel) inputView() string {
-	current := []rune(model.input)
-	position := clamp(model.inputPos, 0, len(current))
-	return string(current[:position]) + "█" + string(current[position:])
-}
-
-func clamp(value, minimum, maximum int) int {
-	if value < minimum {
-		return minimum
-	}
-	if value > maximum {
-		return maximum
-	}
-	return value
-}
-
-func splitPaths(value string) []string {
-	parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' })
-	paths := make([]string, 0, len(parts))
-	for _, path := range parts {
-		if path = strings.TrimSpace(path); path != "" {
-			paths = append(paths, path)
+	criteria := 0
+	for _, criterion := range setup.Criteria {
+		if criterion.Included && strings.TrimSpace(criterion.Text) != "" {
+			criteria++
 		}
 	}
-	return paths
+	return fmt.Sprintf("Change: %s\nExpected outcome: %s\nLimits: %s\nSuccess criteria: %d",
+		boundedSummary(setup.Title), boundedSummary(setup.Outcome), boundedSummary(limits), criteria)
+}
+
+func boundedSummary(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) <= 72 {
+		return value
+	}
+	return string(runes[:71]) + "…"
+}
+
+func terminalInput(input *os.File) bool {
+	return term.IsTerminal(input.Fd())
 }
 
 func printNewCreated(output io.Writer, path string) {
+	absolute, err := filepath.Abs(path)
+	if err == nil {
+		path = absolute
+	}
 	fmt.Fprintf(output, "Created active specification: %s\n", path)
-	fmt.Fprintln(output, "Edit the specification, then run `spec prompt`.")
 }
