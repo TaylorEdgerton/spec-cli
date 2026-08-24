@@ -11,6 +11,7 @@ import (
 	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
+	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
 )
 
 func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
@@ -55,6 +56,12 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	}
 
 	if err := os.WriteFile(filepath.Join(root, "script.py"), []byte("print('two')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "config.yml"), []byte("verify:\n  - 'true'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyrun.Run(root, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	finalUsage := &aiusage.Summary{
@@ -154,28 +161,31 @@ func TestNewRecoversAfterManualRemoval(t *testing.T) {
 	}
 }
 
-func TestPopulateWritesGuidedSpecWithUncheckedCriteria(t *testing.T) {
+func TestSetupCreatesSpecWithUncheckedCriteria(t *testing.T) {
 	root := committedRepo(t)
 	if _, err := state.Register(root); err != nil {
 		t.Fatal(err)
 	}
-	path, err := New(root, "Fix reconnect handling", time.Now())
+	setup, err := BeginSetup(root, "Fix reconnect handling", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	guided := GuidedSpec{
-		Change:              "Fix reconnect handling",
-		Reason:              "Connections do not recover after an outage.",
-		Outcome:             "The application reconnects automatically.",
-		MustNotBreak:        "Health checks remain responsive.",
-		ImportantConstraint: "Do not change the database library.",
-		RelevantFiles:       []string{"src/db/database.go", "tests/test_database.go"},
-		AcceptanceCriteria: []string{
-			"The application reconnects automatically after a temporary outage",
-			"An application restart is not required",
-		},
+	setup.Outcome = "The application reconnects automatically."
+	setup.Limits = "Do not change the database library."
+	setup.Criteria = []state.SetupCriterion{
+		{Text: "The application reconnects automatically after a temporary outage", Included: true},
+		{Text: "An application restart is not required", Included: true},
+		{Text: "Excluded suggestion", Included: false},
 	}
-	if err := Populate(root, guided); err != nil {
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	path, err := CreateSetup(root, setup)
+	if err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -185,27 +195,178 @@ func TestPopulateWritesGuidedSpecWithUncheckedCriteria(t *testing.T) {
 	content := string(data)
 	for _, expected := range []string{
 		"# Fix reconnect handling",
-		"## Intent\n\nConnections do not recover after an outage.",
-		"- Must not break: Health checks remain responsive.",
+		"## Intent\n\nFix reconnect handling",
+		"## Scope\n\nThe application reconnects automatically.",
 		"- Do not change the database library.",
 		"- [ ] The application reconnects automatically after a temporary outage",
 		"- [ ] An application restart is not required",
-		"- `src/db/database.go`",
-		"- `tests/test_database.go`",
 	} {
 		if !strings.Contains(content, expected) {
-			t.Errorf("guided specification does not contain %q:\n%s", expected, content)
+			t.Errorf("created specification does not contain %q:\n%s", expected, content)
 		}
 	}
-	if strings.Contains(content, "- [x]") {
-		t.Fatalf("criteria were incorrectly saved as completed:\n%s", content)
+	if strings.Contains(content, "Excluded suggestion") || strings.Contains(content, "- [x]") {
+		t.Fatalf("created criteria are incorrect:\n%s", content)
 	}
+	workspace, err = state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Title != setup.Title || workspace.Setup != nil {
+		t.Fatalf("workspace after setup = %+v", workspace.Metadata)
+	}
+}
+
+func TestEditSetupPreservesOtherSectionsAndInvalidatesVerification(t *testing.T) {
+	root := committedRepo(t)
+	workspace, err := state.Register(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := BeginSetup(root, "Original change", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.Outcome = "Original outcome"
+	setup.Criteria = []state.SetupCriterion{{Text: "Original criterion", Included: true}}
+	workspace, err = state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	path, err := CreateSetup(root, setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "## Notes\n", "## Notes\n\nKeep this note.\n", 1))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SetVerificationCommands([]string{"true"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveVerification(state.Verification{Passed: true}); err != nil {
+		t.Fatal(err)
+	}
+	edit, err := BeginEdit(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit.Title = "Updated change"
+	edit.Outcome = "Updated outcome"
+	edit.Limits = "Keep compatibility"
+	edit.Criteria = []state.SetupCriterion{{Text: "Updated criterion", Included: true}}
+	workspace, err = state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(edit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveSetup(root, edit); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"# Updated change", "Updated outcome", "- Keep compatibility", "- [ ] Updated criterion", "Keep this note."} {
+		if !strings.Contains(string(updated), expected) {
+			t.Fatalf("updated specification missing %q:\n%s", expected, updated)
+		}
+	}
+	workspace, err = state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verification, err := workspace.Verification()
+	if err != nil || verification != nil {
+		t.Fatalf("verification was not invalidated: %+v, %v", verification, err)
+	}
+	if workspace.Setup != nil || workspace.Title != "Updated change" || len(workspace.VerifyCommands) != 1 {
+		t.Fatalf("workspace after edit = %+v", workspace.Metadata)
+	}
+}
+
+func TestDeletedSpecCanBeRecreatedFromPausedEdit(t *testing.T) {
+	root := committedRepo(t)
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := BeginSetup(root, "Recover deleted Spec", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.Outcome = "The guided content is restored"
+	setup.Criteria = []state.SetupCriterion{{Text: "The Spec exists again", Included: true}}
 	workspace, err := state.Load(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workspace.Title != guided.Change {
-		t.Fatalf("workspace title = %q", workspace.Title)
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	path, err := CreateSetup(root, setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit, err := BeginEdit(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveSetup(root, edit); err == nil || !strings.Contains(err.Error(), "run `spec` to recover") {
+		t.Fatalf("missing edit error = %v", err)
+	}
+	if _, err := CreateSetup(root, edit); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"# Recover deleted Spec", "The guided content is restored", "- [ ] The Spec exists again"} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("recreated specification missing %q:\n%s", expected, data)
+		}
+	}
+	workspace, err = state.Load(root)
+	if err != nil || workspace.Setup != nil {
+		t.Fatalf("workspace after recreation = %+v, %v", workspace.Metadata, err)
+	}
+}
+
+func TestAcceptanceCriteriaParsesAndUpdatesLegacyLists(t *testing.T) {
+	markdown := "# Change\n\n## Acceptance Criteria\n\n- [x] Already reviewed\n- [ ] Still open\n- Legacy item\n\n## Notes\n"
+	criteria := AcceptanceCriteria(markdown)
+	if len(criteria) != 3 || !criteria[0].Checked || criteria[1].Checked || criteria[2].Text != "Legacy item" {
+		t.Fatalf("criteria = %+v", criteria)
+	}
+	for index := range criteria {
+		criteria[index].Checked = true
+	}
+	updated, err := UpdateAcceptanceCriteria(markdown, criteria)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"- [x] Already reviewed", "- [x] Still open", "- [x] Legacy item", "## Notes",
+	} {
+		if !strings.Contains(updated, expected) {
+			t.Fatalf("updated criteria missing %q:\n%s", expected, updated)
+		}
 	}
 }
 
