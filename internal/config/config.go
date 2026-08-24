@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	"gopkg.in/yaml.v3"
@@ -29,6 +30,11 @@ type Workspace struct {
 type Config struct {
 	Verify     []string             `yaml:"verify"`
 	Workspaces map[string]Workspace `yaml:"workspaces"`
+}
+
+type VerificationOption struct {
+	Root     string
+	Commands []string
 }
 
 func Directory() (string, error) {
@@ -119,6 +125,9 @@ func Load() (Config, error) {
 }
 
 func VerificationCommands(root string) ([]string, error) {
+	if workspace, err := state.Load(root); err == nil && len(workspace.VerifyCommands) > 0 {
+		return append([]string(nil), workspace.VerifyCommands...), nil
+	}
 	loaded, err := Load()
 	if err != nil {
 		return nil, err
@@ -130,4 +139,36 @@ func VerificationCommands(root string) ([]string, error) {
 		return loaded.Verify, nil
 	}
 	return nil, nil
+}
+
+func ReusableVerification(currentRoot string) ([]VerificationOption, error) {
+	loaded, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	byRoot := make(map[string][]string)
+	for root, workspace := range loaded.Workspaces {
+		if root != currentRoot && len(workspace.Verify) > 0 {
+			byRoot[root] = append([]string(nil), workspace.Verify...)
+		}
+	}
+	workspaces, err := state.Workspaces()
+	if err != nil {
+		return nil, err
+	}
+	for _, workspace := range workspaces {
+		if workspace.Root != currentRoot && len(workspace.VerifyCommands) > 0 {
+			byRoot[workspace.Root] = append([]string(nil), workspace.VerifyCommands...)
+		}
+	}
+	roots := make([]string, 0, len(byRoot))
+	for root := range byRoot {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	options := make([]VerificationOption, 0, len(roots))
+	for _, root := range roots {
+		options = append(options, VerificationOption{Root: root, Commands: byRoot[root]})
+	}
+	return options, nil
 }

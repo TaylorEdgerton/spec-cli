@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
 func TestInstallDefaultsSeedsMissingFilesWithoutOverwritingCustomTemplates(t *testing.T) {
@@ -102,5 +104,16 @@ func TestVerificationCommandsDoNotDetectProjectTools(t *testing.T) {
 	commands, err = VerificationCommands(root)
 	if err != nil || len(commands) != 1 || commands[0] != "custom-check" {
 		t.Fatalf("configured commands: %v, %v", commands, err)
+	}
+	workspace, err := state.Register(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SetVerificationCommands([]string{"workspace-check"}); err != nil {
+		t.Fatal(err)
+	}
+	commands, err = VerificationCommands(root)
+	if err != nil || len(commands) != 1 || commands[0] != "workspace-check" {
+		t.Fatalf("workspace commands: %v, %v", commands, err)
 	}
 }
