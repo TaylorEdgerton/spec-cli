@@ -2,7 +2,10 @@ package gitutil
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,11 @@ func command(dir string, args ...string) *exec.Cmd {
 }
 
 func output(dir string, args ...string) (string, error) {
+	value, err := outputRaw(dir, args...)
+	return strings.TrimSpace(value), err
+}
+
+func outputRaw(dir string, args ...string) (string, error) {
 	cmd := command(dir, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -28,7 +36,7 @@ func output(dir string, args ...string) (string, error) {
 		}
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }
 
 func Root(dir string) (string, error) {
@@ -172,4 +180,63 @@ func ChangedFiles(root, base string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+func WorktreeFingerprint(root string) (string, error) {
+	hash := sha256.New()
+	writePart := func(value string) {
+		fmt.Fprintf(hash, "%d:", len(value))
+		_, _ = hash.Write([]byte(value))
+	}
+	head, err := Head(root)
+	if err != nil {
+		return "", err
+	}
+	writePart(head)
+	diff, err := outputRaw(root, "diff", "--no-ext-diff", "--binary", "HEAD", "--")
+	if err != nil {
+		return "", err
+	}
+	writePart(diff)
+	untracked, err := outputRaw(root, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", err
+	}
+	for _, relative := range strings.Split(untracked, "\x00") {
+		if relative == "" {
+			continue
+		}
+		writePart(relative)
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		info, statErr := os.Lstat(path)
+		if statErr != nil {
+			return "", statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(path)
+			if readErr != nil {
+				return "", readErr
+			}
+			writePart(target)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			writePart(info.Mode().String())
+			continue
+		}
+		fmt.Fprintf(hash, "%d:", info.Size())
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return "", openErr
+		}
+		_, copyErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }

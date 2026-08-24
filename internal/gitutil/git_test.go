@@ -44,6 +44,44 @@ func TestEnsureActiveSpecExcluded(t *testing.T) {
 	}
 }
 
+func TestWorktreeFingerprintTracksContentAndIgnoresActiveSpec(t *testing.T) {
+	root := t.TempDir()
+	runGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "file.txt")
+	runGit(t, root, "-c", "user.name=Spec Test", "-c", "user.email=spec@example.invalid", "commit", "-m", "base")
+	if _, err := EnsureActiveSpecExcluded(root); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := WorktreeFingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".spec.md"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ignored, err := WorktreeFingerprint(root)
+	if err != nil || ignored != initial {
+		t.Fatalf("ignored fingerprint = %q, initial = %q, err = %v", ignored, initial, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := WorktreeFingerprint(root)
+	if err != nil || first == initial {
+		t.Fatalf("first fingerprint = %q, err = %v", first, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := WorktreeFingerprint(root)
+	if err != nil || second == first {
+		t.Fatalf("second fingerprint = %q, err = %v", second, err)
+	}
+}
+
 func runGit(t *testing.T, root string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
