@@ -14,20 +14,21 @@ The goal is to make AI-assisted development more consistent and easier for human
 
 ```sh
 spec init
-spec new "Fix database reconnect handling"
-spec prompt
+spec
 
 # Work with the AI tool and editor that you prefer.
 
 spec verify
-spec done
+spec
 ```
 
-Git is required, run `spec init` to create a Git repository if required although `spec new` requires a baseline commit.
+Git is required. Run `spec init` to create or register a repository. A baseline commit is required before starting a Spec.
 
-The active change is stored in `.spec.md` at the repository root which is excluded from the repo.
+Running `spec` without a command opens the interactive terminal workflow. Run it again after exiting or closing the terminal to resume where you were.
 
-When run in a terminal, `spec new` offers a guided setup. Use the arrow keys and Enter to select an option. The guided flow asks for the intent, outcome, constraints, and relevant files.
+The setup asks the requirement questions. It then reviews success criteria, configures verification, optionally records a baseline, creates `.spec.md`, and provides an implementation prompt to use. Use the arrow keys and Enter to navigate. Use Shift+Tab or the Back item to revisit earlier answers.
+
+The active change is stored in `.spec.md` at the repository root, excluded from commits through `.git/info/exclude`.
 
 ## Install
 
@@ -54,15 +55,16 @@ spec uninstall
 ## Commands
 
 ```text
+spec                      Open or resume the interactive workflow.
 spec init                 Register the current Git workspace.
 spec configure            Open global configuration and templates.
-spec new [title]          Create a change specification with optional guidance.
+spec new [title]          Start or resume guided Spec setup.
 spec prompt [--info]      Print a bounded, provider-neutral prompt.
 spec prompt --include-files
                           Include relevant file contents in the prompt.
 spec prompt --copy        Copy the prompt to the system clipboard.
-spec verify               Run configured deterministic checks.
-spec done [summary]       Finish the active change and record its result.
+spec verify               Run checks and record the workspace fingerprint.
+spec done [summary]       Review criteria and finish the active change.
 
 spec adr "Title"          Create an ADR in docs/adr/.
 spec readme               Create or prepare README.md in the current directory.
@@ -77,7 +79,9 @@ spec uninstall            Remove Spec and installer-owned PATH setup.
 
 ## State and configuration
 
-Spec associates each workspace with its GIT repository. It stores metadata, generated prompts, verification results, completed specification archives, and short history records in the user state directory. The editable active specification stays in the workspace as `.spec.md` which should be the agents current prompt reference.
+Spec associates each workspace with its Git repository. It stores setup progress, generated prompts, verification results, completed specification archives, and short history records in the user state directory. The editable active specification is `.spec.md` in the workspace and should be the agent's current prompt reference.
+
+On Linux and macOS, external workspace state defaults to `~/.local/state/spec/projects/<workspace-id>/`. Windows uses the user cache directory under `Spec/State/projects/<workspace-id>/`.
 
 The installer creates the global configuration folder. On Linux, the default path is `~/.config/spec/`. The first `spec init` installs any missing default files:
 
@@ -91,7 +95,7 @@ templates/
 
 Run `spec configure` to open the folder to edit the files. Each document command reads its template from this folder every time it runs, so edits apply to the next time around. The ADR template can use `{{.Number}}` and `{{.Title}}`. The runbook template can use `{{.Title}}`.
 
-`spec verify` reads `config.yml`.
+Interactive verification choices are stored in external workspace state. Existing workspace and global commands in `config.yml` remain available as fallbacks.
 
 ```yaml
 verify:
@@ -103,6 +107,8 @@ workspaces:
       - pytest
       - ruff check .
 ```
+
+`spec done` requires a current passing result and asks the engineer to review success criterion before completing the Spec.
 
 ## Project documents
 
