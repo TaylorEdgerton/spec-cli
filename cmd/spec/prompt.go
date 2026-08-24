@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	promptbuilder "github.com/TaylorEdgerton/spec-cli/internal/prompt"
 )
@@ -47,33 +48,66 @@ func cmdPrompt(args []string) error {
 }
 
 func copyText(content string) error {
-	var name string
-	var args []string
-	switch runtime.GOOS {
+	return copyTextWith(runtime.GOOS, content, exec.LookPath, runClipboardTool)
+}
+
+type clipboardTool struct {
+	name string
+	args []string
+}
+
+func clipboardTools(goos string) []clipboardTool {
+	switch goos {
 	case "darwin":
-		name = "pbcopy"
+		return []clipboardTool{{name: "pbcopy"}}
 	case "windows":
-		name = "clip"
+		return []clipboardTool{{name: "clip.exe"}, {name: "clip"}}
 	default:
-		if _, err := exec.LookPath("wl-copy"); err == nil {
-			name = "wl-copy"
-		} else {
-			name, args = "xclip", []string{"-selection", "clipboard"}
+		return []clipboardTool{
+			{name: "wl-copy"},
+			{name: "xclip", args: []string{"-selection", "clipboard"}},
+			{name: "xsel", args: []string{"--clipboard", "--input"}},
+			{name: "clip.exe"},
+			{name: "termux-clipboard-set"},
 		}
 	}
-	cmd := exec.Command(name, args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
+}
+
+func copyTextWith(goos, content string, lookup func(string) (string, error), run func(string, []string, string) error) error {
+	var failures []string
+	available := false
+	tools := clipboardTools(goos)
+	for _, tool := range tools {
+		path, err := lookup(tool.name)
+		if err != nil {
+			continue
+		}
+		available = true
+		if err := run(path, tool.args, content); err == nil {
+			return nil
+		} else {
+			failures = append(failures, tool.name+": "+err.Error())
+		}
 	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("clipboard tool is not available: %w", err)
+	if available {
+		return fmt.Errorf("clipboard copy failed with available tools: %s", strings.Join(failures, "; "))
 	}
-	if _, err := fmt.Fprint(stdin, content); err != nil {
-		return err
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.name)
 	}
-	if err := stdin.Close(); err != nil {
-		return err
+	return fmt.Errorf("no clipboard tool is available; install one of: %s", strings.Join(names, ", "))
+}
+
+func runClipboardTool(path string, args []string, content string) error {
+	command := exec.Command(path, args...)
+	command.Stdin = strings.NewReader(content)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	return cmd.Wait()
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		return fmt.Errorf("%w: %s", err, detail)
+	}
+	return err
 }
