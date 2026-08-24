@@ -75,6 +75,43 @@ func TestHistoryRecordsLoadsCompletedSpecs(t *testing.T) {
 	}
 }
 
+func TestSetupAndWorkspaceVerificationRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	workspace, err := Register(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := Setup{Stage: "outcome", Title: "Reconnect", Input: "partial answer"}
+	if err := workspace.BeginSetup("abc123", time.Now(), setup); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(root)
+	if err != nil || loaded.Setup == nil || loaded.Setup.Input != setup.Input {
+		t.Fatalf("loaded setup = %+v, %v", loaded.Setup, err)
+	}
+	loaded.Setup.Stage = "criteria"
+	loaded.Setup.Criteria = []SetupCriterion{{Text: "Reconnect automatically", Included: true}}
+	if err := loaded.SaveSetup(*loaded.Setup); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.SetVerificationCommands([]string{" go test ./... ", ""}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load(root)
+	if err != nil || len(loaded.VerifyCommands) != 1 || loaded.VerifyCommands[0] != "go test ./..." {
+		t.Fatalf("verification commands = %v, %v", loaded.VerifyCommands, err)
+	}
+	if err := loaded.CompleteSetup("Reconnect"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load(root)
+	if err != nil || loaded.Setup != nil || !loaded.Active || loaded.Title != "Reconnect" {
+		t.Fatalf("completed setup = %+v, %v", loaded.Metadata, err)
+	}
+}
+
 func TestPurgeRefusesHomeDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -22,6 +22,21 @@ type SandboxSession struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
+type SetupCriterion struct {
+	Text     string `json:"text"`
+	Included bool   `json:"included"`
+}
+
+type Setup struct {
+	Stage    string           `json:"stage"`
+	Editing  bool             `json:"editing,omitempty"`
+	Title    string           `json:"title,omitempty"`
+	Outcome  string           `json:"outcome,omitempty"`
+	Limits   string           `json:"limits,omitempty"`
+	Input    string           `json:"input,omitempty"`
+	Criteria []SetupCriterion `json:"criteria,omitempty"`
+}
+
 type Metadata struct {
 	Root           string          `json:"root"`
 	ID             string          `json:"id"`
@@ -29,15 +44,20 @@ type Metadata struct {
 	Title          string          `json:"title,omitempty"`
 	StartedAt      time.Time       `json:"started_at,omitempty"`
 	BaseSHA        string          `json:"base_sha,omitempty"`
+	Setup          *Setup          `json:"setup,omitempty"`
+	VerifyCommands []string        `json:"verify_commands,omitempty"`
 	SandboxSession *SandboxSession `json:"sandbox_session,omitempty"`
 }
 
 type Verification struct {
-	Commands   []string  `json:"commands"`
-	Passed     bool      `json:"passed"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at"`
-	Output     string    `json:"output,omitempty"`
+	Commands      []string  `json:"commands"`
+	Passed        bool      `json:"passed"`
+	FailedCommand string    `json:"failed_command,omitempty"`
+	Completed     int       `json:"completed_commands,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	FinishedAt    time.Time `json:"finished_at"`
+	Fingerprint   string    `json:"fingerprint,omitempty"`
+	Output        string    `json:"output,omitempty"`
 }
 
 type History struct {
@@ -194,6 +214,38 @@ func Load(root string) (Workspace, error) {
 	return Workspace{Dir: dir, Metadata: metadata}, nil
 }
 
+func Workspaces() ([]Workspace, error) {
+	base, err := stateBase()
+	if err != nil {
+		return nil, err
+	}
+	projects := filepath.Join(base, "projects")
+	entries, err := os.ReadDir(projects)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	workspaces := make([]Workspace, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(projects, entry.Name())
+		data, readErr := os.ReadFile(filepath.Join(dir, "metadata.json"))
+		if readErr != nil {
+			continue
+		}
+		var metadata Metadata
+		if json.Unmarshal(data, &metadata) != nil || metadata.Root == "" {
+			continue
+		}
+		workspaces = append(workspaces, Workspace{Dir: dir, Metadata: metadata})
+	}
+	return workspaces, nil
+}
+
 func (workspace Workspace) saveMetadata() error {
 	return writeJSON(filepath.Join(workspace.Dir, "metadata.json"), workspace.Metadata)
 }
@@ -211,15 +263,76 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
 	workspace.Title = title
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
+	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	return workspace.saveMetadata()
 }
 
-func (workspace *Workspace) UpdateTitle(title string) error {
-	if !workspace.Active {
-		return fmt.Errorf("no active change; run `spec new`")
+func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setup) error {
+	if workspace.Active {
+		return fmt.Errorf("a change is already active; finish it with `spec done`")
 	}
+	for _, name := range []string{"prompt.md", "verification.json"} {
+		if err := os.Remove(filepath.Join(workspace.Dir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	copy := setup
+	workspace.Active = true
+	workspace.Title = strings.TrimSpace(setup.Title)
+	workspace.StartedAt = now
+	workspace.BaseSHA = baseSHA
+	workspace.Setup = &copy
+	workspace.SandboxSession = nil
+	return workspace.saveMetadata()
+}
+
+func (workspace *Workspace) SaveSetup(setup Setup) error {
+	if !workspace.Active || workspace.Setup == nil {
+		return fmt.Errorf("no Spec setup is active; run `spec new`")
+	}
+	copy := setup
+	workspace.Setup = &copy
+	workspace.Title = strings.TrimSpace(setup.Title)
+	return workspace.saveMetadata()
+}
+
+func (workspace *Workspace) BeginEdit(setup Setup) error {
+	if !workspace.Active || workspace.Setup != nil {
+		return fmt.Errorf("no completed Spec is available to edit")
+	}
+	copy := setup
+	copy.Editing = true
+	workspace.Setup = &copy
+	return workspace.saveMetadata()
+}
+
+func (workspace *Workspace) CompleteSetup(title string) error {
+	if !workspace.Active || workspace.Setup == nil {
+		return fmt.Errorf("no Spec setup is active; run `spec new`")
+	}
+	editing := workspace.Setup.Editing
 	workspace.Title = strings.TrimSpace(title)
+	workspace.Setup = nil
+	if editing {
+		if err := os.Remove(filepath.Join(workspace.Dir, "verification.json")); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return workspace.saveMetadata()
+}
+
+func (workspace *Workspace) SetVerificationCommands(commands []string) error {
+	clean := make([]string, 0, len(commands))
+	for _, command := range commands {
+		if command = strings.TrimSpace(command); command != "" {
+			clean = append(clean, command)
+		}
+	}
+	workspace.VerifyCommands = clean
+	if err := os.Remove(filepath.Join(workspace.Dir, "verification.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return workspace.saveMetadata()
 }
 
@@ -233,6 +346,7 @@ func (workspace *Workspace) Abandon() error {
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	return workspace.saveMetadata()
 }
@@ -320,6 +434,7 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {
 		return History{}, err
