@@ -18,7 +18,7 @@ type command struct {
 var commands = []command{
 	{"init", "register the current Git workspace", cmdInit},
 	{"configure", "open global configuration and templates", cmdConfigure},
-	{"new", "create and activate a change specification", cmdNew},
+	{"new", "start or resume a change specification", cmdNew},
 	{"prompt", "create a provider-neutral engineering prompt", cmdPrompt},
 	{"verify", "run deterministic project checks", cmdVerify},
 	{"done", "finish the active change", cmdDone},
@@ -40,8 +40,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		usage()
-		return nil
+		return runHome(os.Stdin, os.Stdout, terminalInput(os.Stdin))
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -62,7 +61,8 @@ func run(args []string) error {
 
 func usage() {
 	fmt.Printf("%s %s - structured AI-assisted engineering\n\n", brand.Command, version)
-	fmt.Printf("usage: %s <command> [args]\n\ncommands:\n", brand.Command)
+	fmt.Printf("usage: %s [command] [args]\n", brand.Command)
+	fmt.Printf("run %s without a command to open or resume the interactive workflow\n\ncommands:\n", brand.Command)
 	for _, item := range commands {
 		fmt.Printf("  %-10s %s\n", item.name, item.summary)
 	}
