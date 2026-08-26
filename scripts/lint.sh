@@ -8,5 +8,5 @@ if [ -n "$unformatted" ]; then
   echo "$unformatted"
   exit 1
 fi
-go vet ./...
+go vet -tags="grammar_subset grammar_subset_go" ./...
 echo "lint: gofmt + go vet clean"
