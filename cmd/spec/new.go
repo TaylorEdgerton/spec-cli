@@ -10,6 +10,7 @@ import (
 
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/config"
+	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	promptbuilder "github.com/TaylorEdgerton/spec-cli/internal/prompt"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
@@ -21,6 +22,7 @@ const (
 	setupOutcome      = "outcome"
 	setupLimits       = "limits"
 	setupCriteria     = "criteria"
+	setupDiscovery    = "discovery"
 	setupVerification = "verification"
 	setupVerifyChange = "change-verification"
 	setupVerifyWait   = "waiting-for-verification"
@@ -151,6 +153,19 @@ func runNew(args []string, input io.Reader, output io.Writer, interactive bool) 
 				if err := saveSetup(root, setup); err != nil {
 					return err
 				}
+				continue
+			}
+			setup.Stage = setupDiscovery
+		case setupDiscovery:
+			back, stopped, err := reviewDiscovery(root, setup, input, output)
+			if err != nil {
+				return err
+			}
+			if stopped {
+				return saveAndExit(root, setup, output)
+			}
+			if back {
+				setup.Stage = setupCriteria
 				continue
 			}
 			setup.Stage = setupVerification
@@ -415,6 +430,216 @@ func offerImplementationPrompt(root string, input io.Reader, output io.Writer) e
 		fmt.Fprint(output, content)
 	}
 	return nil
+}
+
+func reviewDiscovery(root string, setup state.Setup, input io.Reader, output io.Writer) (bool, bool, error) {
+	results, discoveryErr := discovery.Find(root, discoveryQuery(setup))
+	for {
+		detail := formatDiscovery(results)
+		if discoveryErr != nil {
+			detail = "Discovery was unavailable. Continue and use repository search as a starting point."
+		}
+		var items, actions []string
+		if len(results) > 0 {
+			items = append(items, "Explore Context")
+			actions = append(actions, "explore")
+		}
+		items = append(items, "Continue", "Refresh", "Back to success criteria")
+		actions = append(actions, "continue", "refresh", "back")
+		printConsoleSection(output, "Change Context", detail)
+		choice, stopped, err := runChoice(input, output, "", "", items)
+		if err != nil || stopped {
+			return false, stopped, err
+		}
+		switch actions[choice] {
+		case "explore":
+			if err := exploreDiscoveryContext(root, results, input, output); err != nil {
+				fmt.Fprintf(output, "Could not explore context: %v\n", err)
+			}
+		case "continue":
+			return false, false, nil
+		case "back":
+			return true, false, nil
+		case "refresh":
+			results, discoveryErr = discovery.Find(root, discoveryQuery(setup))
+		}
+	}
+}
+
+func discoveryQuery(setup state.Setup) discovery.Query {
+	query := discovery.Query{Intent: setup.Title, Outcome: setup.Outcome}
+	for _, criterion := range setup.Criteria {
+		if criterion.Included && strings.TrimSpace(criterion.Text) != "" {
+			query.Criteria = append(query.Criteria, criterion.Text)
+		}
+	}
+	return query
+}
+
+type exploredSymbol struct {
+	Path   string
+	Symbol discovery.Symbol
+}
+
+func exploreDiscoveryContext(root string, results []discovery.Result, input io.Reader, output io.Writer) error {
+	current, ok := defaultExploredSymbol(results)
+	if !ok {
+		return chooseSearchResult(root, results, input, output)
+	}
+	var history []exploredSymbol
+	for {
+		printConsoleSection(output, "Explore Context", formatExploreTree(current))
+		items := exploreChoices(current)
+		choice, stopped, err := runChoice(input, output, "", "", items)
+		if err != nil || stopped {
+			return err
+		}
+		switch {
+		case choice == 0:
+			return openInVSCode(root, discovery.Result{
+				Path: current.Path, Line: current.Symbol.Line, Column: current.Symbol.Column,
+			})
+		case choice <= len(current.Symbol.Related):
+			related := current.Symbol.Related[choice-1]
+			path := related.Path
+			if path == "" {
+				path = current.Path
+			}
+			next, exploreErr := discovery.Explore(root, path, related.Line, related.Column)
+			if exploreErr != nil {
+				next = discovery.Symbol{
+					Name: related.Name, Kind: related.Kind, Line: related.Line, Column: related.Column,
+				}
+			}
+			history = append(history, current)
+			current = exploredSymbol{Path: path, Symbol: next}
+		default:
+			if len(history) == 0 {
+				return nil
+			}
+			current = history[len(history)-1]
+			history = history[:len(history)-1]
+		}
+	}
+}
+
+func defaultExploredSymbol(results []discovery.Result) (exploredSymbol, bool) {
+	for _, result := range results {
+		if len(result.Symbols) > 0 {
+			return exploredSymbol{Path: result.Path, Symbol: result.Symbols[0]}, true
+		}
+	}
+	return exploredSymbol{}, false
+}
+
+func formatExploreTree(current exploredSymbol) string {
+	var builder strings.Builder
+	location := discovery.Result{Path: current.Path, Line: current.Symbol.Line, Column: current.Symbol.Column}
+	fmt.Fprintf(&builder, "%s\n\n%s", styledDiscoveryLocation(location), current.Symbol.Name)
+	for index, related := range current.Symbol.Related {
+		connector := "├─"
+		if index == len(current.Symbol.Related)-1 {
+			connector = "└─"
+		}
+		fmt.Fprintf(&builder, "\n%s %s", connector, related.Relation)
+	}
+	return builder.String()
+}
+
+func exploreChoices(current exploredSymbol) []string {
+	items := []string{fmt.Sprintf("%s :%d", current.Symbol.Name, current.Symbol.Line)}
+	for _, related := range current.Symbol.Related {
+		items = append(items, fmt.Sprintf("%s :%d", related.Name, related.Line))
+	}
+	return append(items, "Back")
+}
+
+func chooseSearchResult(root string, results []discovery.Result, input io.Reader, output io.Writer) error {
+	choices := discoveryOpenChoices(results)
+	items := make([]string, 0, len(choices)+1)
+	for _, choice := range choices {
+		items = append(items, choice.Label)
+	}
+	items = append(items, "Back")
+	printConsoleSection(output, "Explore Context", "Tree-sitter context is unavailable. Choose a search result to open in VS Code.")
+	choice, stopped, err := runChoice(input, output, "", "", items)
+	if err != nil || stopped {
+		return err
+	}
+	if choice == len(choices) {
+		return nil
+	}
+	return openInVSCode(root, choices[choice].Result)
+}
+
+type discoveryOpenChoice struct {
+	Label  string
+	Result discovery.Result
+}
+
+func discoveryOpenChoices(results []discovery.Result) []discoveryOpenChoice {
+	var choices []discoveryOpenChoice
+	for _, result := range results {
+		if len(result.Symbols) == 0 {
+			detail := result.Preview
+			if detail == "" && len(result.Reasons) > 0 {
+				detail = result.Reasons[0]
+			}
+			choices = append(choices, discoveryOpenChoice{
+				Label:  fmt.Sprintf("%s — %s", styledDiscoveryLocation(result), boundedSummary(detail)),
+				Result: result,
+			})
+			continue
+		}
+		for _, symbol := range result.Symbols {
+			target := result
+			target.Line, target.Column = symbol.Line, symbol.Column
+			choices = append(choices, discoveryOpenChoice{
+				Label:  fmt.Sprintf("%s · %s :%d", filepath.Base(result.Path), symbol.Name, symbol.Line),
+				Result: target,
+			})
+		}
+	}
+	return choices
+}
+
+func formatDiscovery(results []discovery.Result) string {
+	if len(results) == 0 {
+		return "No likely files found. Continue and use repository search as a starting point."
+	}
+	var builder strings.Builder
+	for index, result := range results {
+		if index > 0 {
+			builder.WriteByte('\n')
+		}
+		if len(result.Symbols) > 0 {
+			root := result
+			root.Line, root.Column = result.Symbols[0].Line, result.Symbols[0].Column
+			fmt.Fprintln(&builder, styledDiscoveryLocation(root))
+			for _, symbol := range result.Symbols {
+				fmt.Fprintf(&builder, "\n  %s :%d\n", symbol.Name, symbol.Line)
+				for _, reason := range symbol.Reasons {
+					fmt.Fprintf(&builder, "    • %s\n", reason)
+				}
+			}
+			continue
+		}
+		fmt.Fprintln(&builder, styledDiscoveryLocation(result))
+		if result.Preview != "" {
+			fmt.Fprintf(&builder, "  %s\n", result.Preview)
+		}
+		for _, reason := range result.Reasons {
+			fmt.Fprintf(&builder, "  • %s\n", reason)
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func printConsoleSection(output io.Writer, title, body string) {
+	fmt.Fprintf(output, "\n── %s ────────────────────────────────────────\n", title)
+	if strings.TrimSpace(body) != "" {
+		fmt.Fprintln(output, body)
+	}
 }
 
 func verificationPrompt(root string, setup state.Setup, detected []string) string {
