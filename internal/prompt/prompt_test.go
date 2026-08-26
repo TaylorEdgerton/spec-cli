@@ -127,6 +127,53 @@ func TestBuildIncludesRelevantFileContentsOnlyWhenRequested(t *testing.T) {
 	}
 }
 
+func TestBuildDiscoversCompactContextWithoutRelevantFilesSection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	runGit(t, root, "init")
+	write(t, root, "health.go", "package health\n\nfunc checkDatabaseHealth() bool { return true }\n")
+	write(t, root, "unrelated.go", "package unrelated\n")
+	write(t, root, "notes.txt", "report\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "-c", "user.name=Spec Test", "-c", "user.email=spec@example.invalid", "commit", "-m", "baseline")
+	workspace, err := state.Register(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := state.Setup{
+		Title:    "Report database health",
+		Outcome:  "Database health is available",
+		Criteria: []state.SetupCriterion{{Text: "checkDatabaseHealth reports status", Included: true}},
+	}
+	if err := workspace.BeginSetup("baseline", time.Now(), setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := change.CreateSetup(root, setup); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(change.ActivePath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(current), "Relevant Files") {
+		t.Fatalf("guided Spec contains Relevant Files:\n%s", current)
+	}
+
+	result, info, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"## Likely change area", "`health.go`", "path matches"} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("prompt missing %q:\n%s", expected, result)
+		}
+	}
+	if strings.Contains(result, "`unrelated.go`") || strings.Contains(result, "`notes.txt`") || len(info.Files) != 1 || info.Files[0] != "health.go" {
+		t.Fatalf("prompt context = %+v\n%s", info, result)
+	}
+}
+
 func write(t *testing.T, root, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {

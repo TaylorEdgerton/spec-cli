@@ -8,15 +8,17 @@ import (
 	"strings"
 
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
+	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
 const (
-	maxFileBytes = 64 * 1024
-	maxFileTotal = 128 * 1024
-	maxFiles     = 12
-	maxDiffBytes = 64 * 1024
+	maxFileBytes       = 64 * 1024
+	maxFileTotal       = 128 * 1024
+	maxFiles           = 12
+	maxDiffBytes       = 64 * 1024
+	maxDiscoveredFiles = 5
 )
 
 var headingPattern = regexp.MustCompile(`(?m)^##\s+(.+?)\s*$`)
@@ -29,6 +31,13 @@ type Info struct {
 	IncludedError  bool
 	FilesTruncated bool
 	ApproxTokens   int
+}
+
+type contextFile struct {
+	path       string
+	reasons    []string
+	symbols    []discovery.Symbol
+	discovered bool
 }
 
 func Build(root string, includeFiles bool) (string, Info, error) {
@@ -56,10 +65,12 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 	builder.WriteString("Do not claim verification was run unless it actually was.\n")
 	builder.WriteString("Surface conflicting requirements rather than guessing.\n\n")
 	info := Info{}
+	files := promptFiles(root, current)
 
 	totalFileBytes := 0
-	wroteFileList := false
-	for _, relative := range relevantFiles(current) {
+	wroteList := ""
+	for _, context := range files {
+		relative := context.path
 		if filepath.ToSlash(filepath.Clean(relative)) == change.ActiveFilename {
 			continue
 		}
@@ -79,13 +90,39 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 				continue
 			}
 			info.Files = append(info.Files, relative)
-			if !wroteFileList {
-				builder.WriteString("\n## Relevant files\n")
-				wroteFileList = true
+			section := "Relevant files"
+			if context.discovered {
+				section = "Likely change area"
+			}
+			if wroteList != section {
+				builder.WriteString("\n## ")
+				builder.WriteString(section)
+				builder.WriteByte('\n')
+				wroteList = section
 			}
 			builder.WriteString("\n- `")
 			builder.WriteString(relative)
 			builder.WriteString("`\n")
+			for _, reason := range context.reasons {
+				builder.WriteString("  - ")
+				builder.WriteString(reason)
+				builder.WriteByte('\n')
+			}
+			for _, symbol := range context.symbols {
+				builder.WriteString("  - `")
+				builder.WriteString(symbol.Name)
+				fmt.Fprintf(&builder, "` at line %d\n", symbol.Line)
+				for _, reason := range symbol.Reasons {
+					builder.WriteString("    - ")
+					builder.WriteString(reason)
+					builder.WriteByte('\n')
+				}
+				for _, related := range symbol.Related {
+					builder.WriteString("    - ")
+					builder.WriteString(related.Relation)
+					fmt.Fprintf(&builder, " at line %d\n", related.Line)
+				}
+			}
 			continue
 		}
 		data, readErr := os.ReadFile(path)
@@ -106,7 +143,23 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 		totalFileBytes += len(data)
 		builder.WriteString("\n## Relevant file: ")
 		builder.WriteString(relative)
-		builder.WriteString("\n\n```text\n")
+		builder.WriteByte('\n')
+		if len(context.reasons) > 0 {
+			builder.WriteString("\nDiscovery: ")
+			builder.WriteString(strings.Join(context.reasons, "; "))
+			builder.WriteByte('\n')
+		}
+		if len(context.symbols) > 0 {
+			builder.WriteString("Symbols: ")
+			for index, symbol := range context.symbols {
+				if index > 0 {
+					builder.WriteString(", ")
+				}
+				fmt.Fprintf(&builder, "%s (line %d)", symbol.Name, symbol.Line)
+			}
+			builder.WriteByte('\n')
+		}
+		builder.WriteString("\n```text\n")
 		builder.Write(data)
 		if len(data) == 0 || data[len(data)-1] != '\n' {
 			builder.WriteByte('\n')
@@ -150,6 +203,48 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 		return "", Info{}, err
 	}
 	return result, info, nil
+}
+
+func promptFiles(root, markdown string) []contextFile {
+	var files []contextFile
+	seen := make(map[string]bool)
+	for _, path := range relevantFiles(markdown) {
+		key := filepath.ToSlash(filepath.Clean(path))
+		if !seen[key] {
+			seen[key] = true
+			files = append(files, contextFile{path: path})
+		}
+	}
+	setup, err := change.SetupFromMarkdown(markdown)
+	if err != nil {
+		return files
+	}
+	query := discovery.Query{Intent: setup.Title, Outcome: setup.Outcome}
+	for _, criterion := range setup.Criteria {
+		if criterion.Included && strings.TrimSpace(criterion.Text) != "" {
+			query.Criteria = append(query.Criteria, criterion.Text)
+		}
+	}
+	results, err := discovery.Find(root, query)
+	if err != nil {
+		return files
+	}
+	discovered := 0
+	for _, result := range results {
+		key := filepath.ToSlash(filepath.Clean(result.Path))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		files = append(files, contextFile{
+			path: result.Path, reasons: result.Reasons, symbols: result.Symbols, discovered: true,
+		})
+		discovered++
+		if discovered == maxDiscoveredFiles {
+			break
+		}
+	}
+	return files
 }
 
 func relevantFiles(markdown string) []string {
