@@ -164,8 +164,10 @@ func (model *choiceModel) View() tea.View {
 		return tea.NewView("")
 	}
 	var builder strings.Builder
-	builder.WriteString(model.title)
-	builder.WriteString("\n")
+	if model.title != "" {
+		builder.WriteString(model.title)
+		builder.WriteString("\n")
+	}
 	if model.detail != "" {
 		builder.WriteString("\n")
 		builder.WriteString(model.detail)
