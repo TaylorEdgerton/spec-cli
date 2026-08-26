@@ -51,7 +51,7 @@ func New(root, title string, now time.Time) (string, error) {
 	if title != "" {
 		content += title + "\n"
 	}
-	content += "\n## Scope\n\n## Constraints\n\n## Acceptance Criteria\n\n## Relevant Files\n\n## Notes\n"
+	content += "\n## Scope\n\n## Constraints\n\n## Acceptance Criteria\n\n## Notes\n"
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return "", err
@@ -260,7 +260,6 @@ func RenderSetup(setup state.Setup) string {
 		}
 	}
 	writeTaskSection(&builder, "Acceptance Criteria", criteria)
-	writeListSection(&builder, "Relevant Files", nil)
 	builder.WriteString("## Notes\n")
 	return builder.String()
 }

@@ -208,6 +208,9 @@ func TestSetupCreatesSpecWithUncheckedCriteria(t *testing.T) {
 	if strings.Contains(content, "Excluded suggestion") || strings.Contains(content, "- [x]") {
 		t.Fatalf("created criteria are incorrect:\n%s", content)
 	}
+	if strings.Contains(content, "## Relevant Files") {
+		t.Fatalf("guided specification includes manual file bookkeeping:\n%s", content)
+	}
 	workspace, err = state.Load(root)
 	if err != nil {
 		t.Fatal(err)
