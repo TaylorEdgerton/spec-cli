@@ -7,6 +7,7 @@ import (
 
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/config"
+	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
 )
@@ -36,12 +37,48 @@ func runHome(input io.Reader, output io.Writer, interactive bool) error {
 			}
 			return runInit(output)
 		}
-		if !workspace.Active {
-			choice, stopped, err := runChoice(input, output, "Spec", "No Spec is active.", []string{"Start a new Spec", "Exit"})
-			if err != nil || stopped || choice == 1 {
-				return err
+		choice, stopped, err := runChoice(input, output, "Spec", "", homeMenuItems(workspace.Active))
+		if err != nil || stopped || choice == 4 {
+			return err
+		}
+		switch choice {
+		case 0:
+			if workspace.Active {
+				return resumeActiveSpec(root, input, output)
 			}
 			return runNew(nil, input, output, true)
+		case 1:
+			if stopped, exploreErr := runExploreCodebase(root, input, output); exploreErr != nil || stopped {
+				return exploreErr
+			}
+		case 2:
+			if stopped, recentErr := runRecentChanges(input, output); recentErr != nil || stopped {
+				return recentErr
+			}
+		case 3:
+			if stopped, documentErr := runCreateDocument(root, input, output); documentErr != nil || stopped {
+				return documentErr
+			}
+		}
+	}
+}
+
+func homeMenuItems(active bool) []string {
+	primary := "Create a spec"
+	if active {
+		primary = "Resume Spec"
+	}
+	return []string{primary, "Explore codebase", "Recent changes", "Create a doc", "Exit"}
+}
+
+func resumeActiveSpec(root string, input io.Reader, output io.Writer) error {
+	for {
+		workspace, err := state.Load(root)
+		if err != nil {
+			return err
+		}
+		if !workspace.Active {
+			return nil
 		}
 		if workspace.Setup != nil {
 			return runNew(nil, input, output, true)
@@ -147,6 +184,105 @@ func runHome(input io.Reader, output io.Writer, interactive bool) error {
 		}
 		return offerImplementationPrompt(root, input, output)
 	}
+}
+
+func runExploreCodebase(root string, input io.Reader, output io.Writer) (bool, error) {
+queryLoop:
+	for {
+		query, back, stopped, err := runTextPrompt(input, output, "Explore Codebase", "Codebase query:", "", false, true)
+		if err != nil || stopped {
+			return stopped, err
+		}
+		if back {
+			return false, nil
+		}
+		results, discoveryErr := findCodebaseContext(root, query)
+		for {
+			detail := formatDiscovery(results)
+			if discoveryErr != nil {
+				detail = "Discovery was unavailable. Try a different query or use repository search."
+			}
+			var items, actions []string
+			if len(results) > 0 {
+				items = append(items, "Explore context")
+				actions = append(actions, "explore")
+			}
+			items = append(items, "New query", "Back")
+			actions = append(actions, "query", "back")
+			printConsoleSection(output, "Codebase Context", detail)
+			choice, stopped, err := runChoice(input, output, "", "", items)
+			if err != nil || stopped {
+				return stopped, err
+			}
+			switch actions[choice] {
+			case "explore":
+				if err := exploreDiscoveryContext(root, results, input, output); err != nil {
+					fmt.Fprintf(output, "Could not explore context: %v\n", err)
+				}
+			case "query":
+				continue queryLoop
+			case "back":
+				return false, nil
+			}
+		}
+	}
+}
+
+func findCodebaseContext(root, query string) ([]discovery.Result, error) {
+	return discovery.Find(root, discovery.Query{Intent: query})
+}
+
+func runRecentChanges(input io.Reader, output io.Writer) (bool, error) {
+	for {
+		choice, stopped, err := runChoice(input, output, "Recent Changes", "", recentChangesMenuItems())
+		if err != nil || stopped {
+			return stopped, err
+		}
+		if choice == 2 {
+			return false, nil
+		}
+		title := "Spec History"
+		if choice == 1 {
+			title = "Code Changes"
+		}
+		printConsoleSection(output, title, "under development")
+	}
+}
+
+func recentChangesMenuItems() []string {
+	return []string{"Spec history", "Code changes", "Back"}
+}
+
+func runCreateDocument(root string, input io.Reader, output io.Writer) (bool, error) {
+	for {
+		choice, stopped, err := runChoice(input, output, "Create a Doc", "", createDocumentMenuItems())
+		if err != nil || stopped {
+			return stopped, err
+		}
+		switch choice {
+		case 0:
+			if err := runREADME(nil, output); err != nil {
+				return false, err
+			}
+		case 1:
+			title, back, stopped, err := runTextPrompt(input, output, "Create a Runbook", "Scenario title:", "", false, true)
+			if err != nil || stopped {
+				return stopped, err
+			}
+			if back {
+				continue
+			}
+			if err := runRunbook(root, []string{title}, output); err != nil {
+				return false, err
+			}
+		case 2:
+			return false, nil
+		}
+	}
+}
+
+func createDocumentMenuItems() []string {
+	return []string{"README", "Runbook", "Back"}
 }
 
 func editActiveSpec(root string, input io.Reader, output io.Writer) error {

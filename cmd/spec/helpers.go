@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,10 @@ func cmdADR(args []string) error {
 }
 
 func cmdREADME(args []string) error {
+	return runREADME(args, os.Stdout)
+}
+
+func runREADME(args []string, output io.Writer) error {
 	if err := noArgs(args, "spec readme"); err != nil {
 		return err
 	}
@@ -45,20 +50,20 @@ func cmdREADME(args []string) error {
 			documentPath = filepath.ToSlash(relative)
 		}
 	}
-	created, output, err := documents.README(directory, documentPath)
+	created, prompt, err := documents.README(directory, documentPath)
 	if err != nil {
 		return err
 	}
 	if created {
-		fmt.Printf("Created %s\n", target)
+		fmt.Fprintf(output, "Created %s\n", target)
 		return nil
 	}
 	if rootErr == nil {
 		if workspace, loadErr := state.Load(root); loadErr == nil {
-			_ = workspace.SavePrompt(output)
+			_ = workspace.SavePrompt(prompt)
 		}
 	}
-	fmt.Print(output)
+	fmt.Fprint(output, prompt)
 	return nil
 }
 
@@ -67,34 +72,38 @@ func cmdRunbook(args []string) error {
 	if err != nil {
 		return err
 	}
+	return runRunbook(root, args, os.Stdout)
+}
+
+func runRunbook(root string, args []string, output io.Writer) error {
 	if len(args) == 0 {
 		paths, err := documents.Runbooks(root)
 		if err != nil {
 			return err
 		}
 		if len(paths) == 0 {
-			fmt.Println("No runbooks found.")
+			fmt.Fprintln(output, "No runbooks found.")
 		} else {
-			fmt.Println("Runbooks:")
+			fmt.Fprintln(output, "Runbooks:")
 			for _, path := range paths {
-				fmt.Printf("  %s\n", path)
+				fmt.Fprintf(output, "  %s\n", path)
 			}
 		}
-		fmt.Println("Create or update one with: spec runbook \"Scenario title\"")
+		fmt.Fprintln(output, "Create or update one with: spec runbook \"Scenario title\"")
 		return nil
 	}
-	path, created, output, err := documents.Runbook(root, strings.Join(args, " "))
+	path, created, prompt, err := documents.Runbook(root, strings.Join(args, " "))
 	if err != nil {
 		return err
 	}
 	if created {
-		fmt.Printf("Created %s\n", displayPath(path))
+		fmt.Fprintf(output, "Created %s\n", displayPath(path))
 		return nil
 	}
 	if workspace, loadErr := state.Load(root); loadErr == nil {
-		_ = workspace.SavePrompt(output)
+		_ = workspace.SavePrompt(prompt)
 	}
-	fmt.Print(output)
+	fmt.Fprint(output, prompt)
 	return nil
 }
 

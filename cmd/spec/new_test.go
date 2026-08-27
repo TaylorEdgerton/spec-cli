@@ -199,7 +199,7 @@ func TestConsoleSectionsHaveLabelledSeparators(t *testing.T) {
 }
 
 func TestChoiceMenusLeaveMouseEventsToTheTerminal(t *testing.T) {
-	model := &choiceModel{items: []string{"Explore Context", "Continue"}, selected: -1}
+	model := &choiceModel{items: []string{"Explore context", "Continue"}, selected: -1}
 	view := model.View()
 	if view.MouseMode != tea.MouseModeNone || view.OnMouse != nil {
 		t.Fatal("choice menu captures terminal mouse events")

@@ -441,7 +441,7 @@ func reviewDiscovery(root string, setup state.Setup, input io.Reader, output io.
 		}
 		var items, actions []string
 		if len(results) > 0 {
-			items = append(items, "Explore Context")
+			items = append(items, "Explore context")
 			actions = append(actions, "explore")
 		}
 		items = append(items, "Continue", "Refresh", "Back to success criteria")
