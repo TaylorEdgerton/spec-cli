@@ -10,6 +10,7 @@ const noScreenAction screenAction = ""
 type screenItem struct {
 	ID         string
 	Label      string
+	Detail     string
 	Selectable bool
 	Action     screenAction
 	Preview    any
@@ -25,6 +26,31 @@ type screenSection struct {
 type canonicalScreen struct {
 	Sections []screenSection
 	Cursor   int
+}
+
+// screenViewport is the shared body viewport used by workflow screens. The
+// selected canonical item, when any, must remain inside the visible window.
+type screenViewport struct {
+	Height int
+	Offset int
+}
+
+func (viewport screenViewport) visible(lines []string, selectedLine int) ([]string, int) {
+	limit := max(1, viewport.Height)
+	if len(lines) <= limit {
+		return lines, 0
+	}
+	offset := clamp(viewport.Offset, 0, max(0, len(lines)-limit))
+	if selectedLine >= 0 {
+		if selectedLine < offset {
+			offset = selectedLine
+		}
+		if selectedLine >= offset+limit-1 {
+			offset = selectedLine - limit + 2
+		}
+	}
+	offset = clamp(offset, 0, max(0, len(lines)-limit))
+	return lines[offset : offset+limit], offset
 }
 
 func (screen canonicalScreen) visibleItemIDs() []string {
@@ -73,6 +99,14 @@ func (screen canonicalScreen) selectedItem() (screenItem, bool) {
 		return screenItem{}, false
 	}
 	return items[clamp(screen.Cursor, 0, len(items)-1)], true
+}
+
+func (screen canonicalScreen) selectedItemLabel() string {
+	item, ok := screen.selectedItem()
+	if !ok {
+		return ""
+	}
+	return item.Label
 }
 
 func (screen canonicalScreen) activate() screenAction {
