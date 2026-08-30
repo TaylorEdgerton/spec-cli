@@ -7,18 +7,21 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
 type planModel struct {
 	root                  string
 	stored                *state.StoredChangePlan
+	open                  func(string, discovery.Result) error
+	status                string
 	cursor, width, height int
 	done                  bool
 }
 
 func newPlanModel(root string, stored *state.StoredChangePlan) *planModel {
-	return &planModel{root: root, stored: stored}
+	return &planModel{root: root, stored: stored, open: openInVSCode}
 }
 func (m *planModel) Init() tea.Cmd { return nil }
 func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -31,9 +34,11 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch v.Keystroke() {
 		case "up", "k":
-			m.cursor = wrap(m.cursor-1, len(m.selectableIDs()))
+			m.cursor, m.status = wrap(m.cursor-1, len(m.selectableIDs())), ""
 		case "down", "j":
-			m.cursor = wrap(m.cursor+1, len(m.selectableIDs()))
+			m.cursor, m.status = wrap(m.cursor+1, len(m.selectableIDs())), ""
+		case "o":
+			m.openSelected()
 		case "q", "b", "esc", "ctrl+c":
 			m.done = true
 			return m, tea.Quit
@@ -61,6 +66,32 @@ func (m *planModel) selectedID() string {
 	}
 	return ids[clamp(m.cursor, 0, len(ids)-1)]
 }
+
+// selectedFile reports the planned file path when the cursor is on a file row.
+func (m *planModel) selectedFile() (string, bool) {
+	if m.stored == nil {
+		return "", false
+	}
+	var index int
+	if _, err := fmt.Sscanf(m.selectedID(), "plan.file.%d", &index); err != nil || index < 0 || index >= len(m.stored.Plan.Files) {
+		return "", false
+	}
+	return m.stored.Plan.Files[index].Path, true
+}
+
+func (m *planModel) openSelected() {
+	path, ok := m.selectedFile()
+	if !ok {
+		m.status = "Select a planned file to open it in VS Code."
+		return
+	}
+	if err := m.open(m.root, discovery.Result{Path: path}); err != nil {
+		m.status = "Could not open in VS Code: " + err.Error()
+		return
+	}
+	m.status = "Opened " + path
+}
+
 func (m *planModel) View() tea.View {
 	w, h := m.width, m.height
 	if w <= 0 {
@@ -110,20 +141,18 @@ func (m *planModel) View() tea.View {
 	if preview := m.preview(); preview != "" {
 		lines = append(lines, "", uiTitleStyle.Render("Preview"), preview)
 	}
+	if m.status != "" {
+		lines = append(lines, "", uiMutedStyle.Render(m.status))
+	}
 	header := fmt.Sprintf("Implementation Plan  AGENT PLAN\nSubmitted %s · %s · %s", m.stored.SubmittedAt.Format("15:04"), emptyAs(m.stored.Submitter, "unknown submitter"), m.stored.Source)
-	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"o", "VS Code"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}}, "  ")
+	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"o", "VS Code"}, {"b", "back"}}, "  ")
 	return tea.NewView(uiAppShell(w, h, header, strings.Join(lines, "\n"), footer))
 }
 func (m *planModel) preview() string {
-	if m.stored == nil {
+	path, ok := m.selectedFile()
+	if !ok {
 		return ""
 	}
-	id := m.selectedID()
-	var index int
-	if _, err := fmt.Sscanf(id, "plan.file.%d", &index); err != nil || index < 0 || index >= len(m.stored.Plan.Files) {
-		return ""
-	}
-	path := m.stored.Plan.Files[index].Path
 	data, err := os.ReadFile(filepath.Join(m.root, filepath.FromSlash(path)))
 	if err != nil {
 		return uiMutedStyle.Render("File is not present yet: " + path)

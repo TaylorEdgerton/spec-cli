@@ -82,6 +82,49 @@ func TestPlanIsNotPersistedUntilExplicitAcceptance(t *testing.T) {
 	}
 }
 
+func TestPlanCapturePersistsOnlyAfterAcceptDecision(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	setup := *workspace.Setup
+	setup.Title = "Capture decisions"
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := completeDefinition(root, setup, &bytes.Buffer{}, definitionServices{BuildPrompt: func(string) (string, error) { return "prompt", nil }, CopyPrompt: func(string) error { return nil }}); err != nil {
+		t.Fatal(err)
+	}
+	raw := "Here is the plan.\n```spec-plan\n" + validPlanJSON + "\n```\nReady."
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	for _, decision := range []planDecision{planSkip, planEdit} {
+		plan, stored, err := capturePlanDecision(root, raw, decision, "Codex", now)
+		if err != nil || stored != nil {
+			t.Fatalf("%s stored=%+v err=%v", decision, stored, err)
+		}
+		if decision == planEdit && (len(plan.Files) != 1 || plan.Files[0].Path != "config/config.go") {
+			t.Fatalf("edit did not return the validated plan: %+v", plan)
+		}
+		if loaded, err := workspace.Plan(); err != nil || loaded != nil {
+			t.Fatalf("%s persisted a plan: %+v, %v", decision, loaded, err)
+		}
+	}
+
+	if _, _, err := capturePlanDecision(root, "no fenced block here", planAccept, "Codex", now); err == nil {
+		t.Fatal("accept of an unparseable paste succeeded")
+	}
+	if loaded, err := workspace.Plan(); err != nil || loaded != nil {
+		t.Fatalf("rejected accept persisted a plan: %+v, %v", loaded, err)
+	}
+
+	_, stored, err := capturePlanDecision(root, raw, planAccept, "Codex", now)
+	if err != nil || stored == nil || stored.Source != state.PlanSourcePaste || stored.Submitter != "Codex" {
+		t.Fatalf("accept stored=%+v err=%v", stored, err)
+	}
+	loaded, err := workspace.Plan()
+	if err != nil || loaded == nil || len(loaded.Plan.Files) != 1 || loaded.Plan.Files[0].Path != "config/config.go" {
+		t.Fatalf("accepted plan not persisted: %+v, %v", loaded, err)
+	}
+}
+
 func TestCLIAndPastedPlansUseIdenticalCanonicalState(t *testing.T) {
 	pasted, err := validateChangePlan([]byte(validPlanJSON))
 	if err != nil {

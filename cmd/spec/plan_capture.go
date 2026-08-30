@@ -116,6 +116,26 @@ func saveAcceptedPlan(root string, plan state.ChangePlan, source state.PlanSourc
 	}
 	return &stored, nil
 }
+
+func capturePlanDecision(root, raw string, decision planDecision, submitter string, now time.Time) (state.ChangePlan, *state.StoredChangePlan, error) {
+	if decision == planSkip {
+		return state.ChangePlan{}, nil, nil
+	}
+	block, err := extractPlanBlock(raw)
+	if err != nil {
+		return state.ChangePlan{}, nil, err
+	}
+	plan, err := validateChangePlan(block)
+	if err != nil {
+		return state.ChangePlan{}, nil, err
+	}
+	if decision != planAccept {
+		return plan, nil, nil
+	}
+	stored, err := saveAcceptedPlan(root, plan, state.PlanSourcePaste, submitter, now)
+	return plan, stored, err
+}
+
 func runPlanSubmit(root string, input io.Reader, output io.Writer, now time.Time) error {
 	data, err := io.ReadAll(input)
 	if err != nil {
