@@ -370,6 +370,252 @@ func significantTokens() {
 	}
 }
 
+func TestExploreResolvesOneHopGoRelationshipsAcrossPackageFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "runner.go", `package runner
+
+func Run() {
+	helper()
+}
+
+func leaf() {}
+`)
+	writeFile(t, root, "helper.go", `package runner
+
+func helper() {
+	leaf()
+}
+`)
+	writeFile(t, root, "runner_test.go", `package runner
+
+func TestRun() {
+	Run()
+}
+`)
+
+	testSymbol, err := Explore(root, "runner_test.go", 3, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := relatedNamed(testSymbol.Related, "Run()")
+	if run.Relation != "calls Run()" || run.Path != "runner.go" || run.Line != 3 {
+		t.Fatalf("test relationships = %+v", testSymbol.Related)
+	}
+
+	runSymbol, err := Explore(root, "runner.go", 3, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := relatedNamed(runSymbol.Related, "helper()")
+	if helper.Relation != "calls helper()" || helper.Path != "helper.go" {
+		t.Fatalf("run relationships = %+v", runSymbol.Related)
+	}
+	if caller := relatedNamed(runSymbol.Related, "TestRun()"); caller.Relation != "called by TestRun()" || caller.Path != "runner_test.go" {
+		t.Fatalf("run callers = %+v", runSymbol.Related)
+	}
+	if containsRelatedName(runSymbol.Related, "leaf()") {
+		t.Fatalf("cross-file expansion exceeded one hop: %+v", runSymbol.Related)
+	}
+}
+
+func TestExplorePythonResolvesMethodsImportsAndTests(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "service.py", `from helpers import helper
+
+class Service:
+    def run(self):
+        return helper()
+`)
+	writeFile(t, root, "helpers.py", `def helper():
+    return leaf()
+
+def leaf():
+    return True
+`)
+	writeFile(t, root, "test_service.py", `from service import Service
+
+def test_service():
+    return Service()
+`)
+
+	run, err := Explore(root, "service.py", 5, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Name != "run()" || run.Kind != "method" {
+		t.Fatalf("Python enclosing method = %+v", run)
+	}
+	helper := relatedNamed(run.Related, "helper()")
+	if helper.Relation != "calls helper()" || helper.Path != "helpers.py" {
+		t.Fatalf("Python relationships = %+v", run.Related)
+	}
+	if containsRelatedName(run.Related, "leaf()") {
+		t.Fatalf("Python expansion exceeded one hop: %+v", run.Related)
+	}
+
+	service, err := Explore(root, "service.py", 3, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testCaller := relatedNamed(service.Related, "test_service()")
+	if service.Name != "Service" || testCaller.Relation != "called by test_service()" || testCaller.Kind != "test" {
+		t.Fatalf("Python class callers = symbol:%+v related:%+v", service, service.Related)
+	}
+}
+
+func TestExploreECMAScriptFamilyResolvesImportedCalls(t *testing.T) {
+	tests := []struct {
+		name       string
+		extension  string
+		mainSource string
+		wantRoot   string
+	}{
+		{
+			name: "JavaScript", extension: ".js", wantRoot: "run()",
+			mainSource: `import { helper } from "./helper";
+
+export function run() {
+  return helper();
+}
+`,
+		},
+		{
+			name: "JSX arrow function", extension: ".jsx", wantRoot: "Panel()",
+			mainSource: `import { helper } from "./helper";
+
+export const Panel = () => <button onClick={() => helper()} />;
+`,
+		},
+		{
+			name: "TypeScript", extension: ".ts", wantRoot: "run()",
+			mainSource: `import { helper } from "./helper";
+
+export function run(): boolean {
+  return helper();
+}
+`,
+		},
+		{
+			name: "TSX", extension: ".tsx", wantRoot: "Panel()",
+			mainSource: `import { helper } from "./helper";
+
+export function Panel() { return <button onClick={() => helper()} />; }
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, "main"+test.extension, test.mainSource)
+			writeFile(t, root, "helper"+test.extension, `export function helper() { return leaf(); }
+function leaf() { return true; }
+`)
+			position := strings.LastIndex(test.mainSource, "helper()")
+			line, column, _ := matchLocation(test.mainSource, position)
+			symbol, err := Explore(root, "main"+test.extension, line, column)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if symbol.Name != test.wantRoot {
+				t.Fatalf("enclosing symbol = %+v", symbol)
+			}
+			helper := relatedNamed(symbol.Related, "helper()")
+			if helper.Relation != "calls helper()" || helper.Path != "helper"+test.extension {
+				t.Fatalf("relationships = %+v", symbol.Related)
+			}
+			if containsRelatedName(symbol.Related, "leaf()") {
+				t.Fatalf("expansion exceeded one hop: %+v", symbol.Related)
+			}
+		})
+	}
+}
+
+func TestExploreResolvesPythonAndJavaScriptModuleCallForms(t *testing.T) {
+	tests := []struct {
+		name       string
+		mainPath   string
+		helperPath string
+		main       string
+		helper     string
+	}{
+		{
+			name: "Python module import", mainPath: "main.py", helperPath: "helpers.py",
+			main:   "import helpers\n\ndef run():\n    return helpers.helper()\n",
+			helper: "def helper():\n    return True\n",
+		},
+		{
+			name: "JavaScript default import", mainPath: "main.js", helperPath: "helper.js",
+			main:   "import helper from './helper';\n\nexport function run() { return helper(); }\n",
+			helper: "export default function helper() { return true; }\n",
+		},
+		{
+			name: "TypeScript namespace import", mainPath: "main.ts", helperPath: "helpers.ts",
+			main:   "import * as helpers from './helpers';\n\nexport function run() { return helpers.helper(); }\n",
+			helper: "export function helper(): boolean { return true; }\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, test.mainPath, test.main)
+			writeFile(t, root, test.helperPath, test.helper)
+			position := strings.LastIndex(test.main, "helper()")
+			line, column, _ := matchLocation(test.main, position)
+			symbol, err := Explore(root, test.mainPath, line, column)
+			if err != nil {
+				t.Fatal(err)
+			}
+			helper := relatedNamed(symbol.Related, "helper()")
+			if helper.Relation != "calls helper()" || helper.Path != test.helperPath {
+				t.Fatalf("relationships = %+v", symbol.Related)
+			}
+		})
+	}
+}
+
+func TestSupportedExtensionsShareTreeSitterProvider(t *testing.T) {
+	for _, path := range []string{
+		"service.go", "service.py", "app.js", "component.jsx", "worker.mjs", "config.cjs",
+		"service.ts", "component.tsx", "worker.mts", "config.cts",
+	} {
+		provider := providerFor(path)
+		if provider == nil {
+			t.Fatalf("no symbol provider for %s", path)
+		}
+		if _, ok := provider.(treeSitterSymbolProvider); !ok {
+			t.Fatalf("%s uses %T, want shared Tree-sitter provider", path, provider)
+		}
+	}
+}
+
+func TestFindReturnsTreeSitterSymbolsForRequestedLanguages(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		content string
+		want    string
+	}{
+		{name: "Python", path: "permissions.py", content: "def map_permissions():\n    return True\n", want: "map_permissions()"},
+		{name: "JavaScript", path: "permissions.js", content: "export function mapPermissions() { return true; }\n", want: "mapPermissions()"},
+		{name: "JSX", path: "permissions.jsx", content: "export const PermissionMap = () => <div>permissions</div>;\n", want: "PermissionMap()"},
+		{name: "TypeScript", path: "permissions.ts", content: "export function mapPermissions(): boolean { return true; }\n", want: "mapPermissions()"},
+		{name: "TSX", path: "permissions.tsx", content: "export function PermissionMap() { return <div>permissions</div>; }\n", want: "PermissionMap()"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, test.path, test.content)
+			results, err := Find(root, Query{Intent: "change permission mapping"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || len(results[0].Symbols) == 0 || results[0].Symbols[0].Name != test.want {
+				t.Fatalf("results = %+v", results)
+			}
+		})
+	}
+}
+
 func TestFindFallsBackWhenSymbolsAreUnsupportedOrParsingFails(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -380,6 +626,8 @@ func TestFindFallsBackWhenSymbolsAreUnsupportedOrParsingFails(t *testing.T) {
 	}{
 		{name: "unsupported language", path: "discovery.rb", content: "def discovery_context\nend\n", line: 1, column: 5},
 		{name: "parser failure", path: "discovery.go", content: "package discovery\n\nfunc discoveryContext(\n", line: 3, column: 6},
+		{name: "Python parser failure", path: "discovery.py", content: "def discovery_context(\n", line: 1, column: 5},
+		{name: "TSX parser failure", path: "discovery.tsx", content: "export function Discovery( {\n", line: 1, column: 17},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -445,6 +693,33 @@ func TestFindExpandsCurrentDiscoveryRegressionToBehaviouralSymbols(t *testing.T)
 		!containsRelatedName(symbols[0].Related, "kindWord") ||
 		(!containsRelatedName(symbols[0].Related, "significantWords()") && !containsRelatedName(symbols[0].Related, "significantTokens()")) {
 		t.Fatalf("behavioural symbols = %+v", symbols)
+	}
+}
+
+func TestFindPrefersExactFunctionDefinitionOverCallersWithoutSCIP(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "context.go", `package main
+
+func newContextExplorer() {}
+
+func runContextExplorer() {
+	newContextExplorer()
+}
+
+func exploreDiscoveryContext() {
+	newContextExplorer()
+}
+`)
+	results, err := Find(root, Query{Intent: "newContextExplorer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 || len(results[0].Symbols) == 0 || results[0].Symbols[0].Name != "newContextExplorer()" {
+		t.Fatalf("exact structural root = %+v", results)
+	}
+	if !containsRelatedName(results[0].Symbols[0].Related, "runContextExplorer()") ||
+		!containsRelatedName(results[0].Symbols[0].Related, "exploreDiscoveryContext()") {
+		t.Fatalf("exact structural callers = %+v", results[0].Symbols[0].Related)
 	}
 }
 

@@ -50,24 +50,6 @@ type Result struct {
 	symbolMatches   []symbolMatch
 }
 
-type Symbol struct {
-	Name    string
-	Kind    string
-	Line    int
-	Column  int
-	Reasons []string
-	Related []RelatedSymbol
-}
-
-type RelatedSymbol struct {
-	Name     string
-	Kind     string
-	Path     string
-	Line     int
-	Column   int
-	Relation string
-}
-
 type signalSource uint8
 
 const (
@@ -110,9 +92,30 @@ type fileEvidence struct {
 }
 
 type scannedFile struct {
-	evidence fileEvidence
-	found    []bool
-	searched bool
+	evidence        fileEvidence
+	found           []bool
+	termFrequencies []int
+	documentLength  int
+	searched        bool
+}
+
+type lexicalRanker uint8
+
+const (
+	rankerCurrent lexicalRanker = iota
+	rankerBM25
+)
+
+type corpusStatistics struct {
+	documentFrequency   []int
+	documents           int
+	averageDocumentSize float64
+}
+
+type lexicalCorpus struct {
+	signals    []signal
+	candidates []scannedFile
+	statistics corpusStatistics
 }
 
 type lexicalToken struct {
@@ -131,41 +134,76 @@ var (
 // same set. Intent signals carry more weight than outcome and criterion
 // signals, while document frequency reduces the influence of common terms.
 func Find(root string, query Query) ([]Result, error) {
-	signals := querySignals(query)
-	if len(signals) == 0 {
-		return nil, nil
-	}
-	files, err := repositoryFiles(root)
+	results, err := findLexical(root, query, rankerBM25)
 	if err != nil {
 		return nil, err
 	}
+	return enrichCodeContext(root, results), nil
+}
+
+func findLexical(root string, query Query, ranker lexicalRanker) ([]Result, error) {
+	corpus, err := prepareLexicalCorpus(root, query)
+	if err != nil {
+		return nil, err
+	}
+	return rankLexicalCorpus(corpus, ranker), nil
+}
+
+func prepareLexicalCorpus(root string, query Query) (lexicalCorpus, error) {
+	files, err := repositoryFiles(root)
+	if err != nil {
+		return lexicalCorpus{}, err
+	}
+	return prepareLexicalCorpusFiles(root, query, files), nil
+}
+
+func prepareLexicalCorpusFiles(root string, query Query, files []string) lexicalCorpus {
+	signals := querySignals(query)
+	if len(signals) == 0 {
+		return lexicalCorpus{}
+	}
 	files = boundedSearchFiles(root, files)
 	if len(files) == 0 {
-		return nil, nil
+		return lexicalCorpus{}
 	}
 
 	scanned := scanFiles(root, files, signals)
-	documentFrequency := make([]int, len(signals))
-	searched := 0
-	var evidence []fileEvidence
+	statistics := corpusStatistics{documentFrequency: make([]int, len(signals))}
+	var candidates []scannedFile
+	totalDocumentSize := 0
 	for _, file := range scanned {
 		if !file.searched {
 			continue
 		}
-		searched++
+		statistics.documents++
+		totalDocumentSize += file.documentLength
 		for index, found := range file.found {
 			if found {
-				documentFrequency[index]++
+				statistics.documentFrequency[index]++
 			}
 		}
 		if len(file.evidence.matches) > 0 {
-			evidence = append(evidence, file.evidence)
+			candidates = append(candidates, file)
 		}
 	}
+	if statistics.documents > 0 {
+		statistics.averageDocumentSize = float64(totalDocumentSize) / float64(statistics.documents)
+	}
+	return lexicalCorpus{signals: signals, candidates: candidates, statistics: statistics}
+}
 
-	results := make([]Result, 0, len(evidence))
-	for _, file := range evidence {
-		if result, ok := rankFile(file, signals, documentFrequency, searched); ok {
+func rankLexicalCorpus(corpus lexicalCorpus, ranker lexicalRanker) []Result {
+	results := make([]Result, 0, len(corpus.candidates))
+	for _, file := range corpus.candidates {
+		var result Result
+		var ok bool
+		switch ranker {
+		case rankerBM25:
+			result, ok = rankFileBM25(file, corpus.signals, corpus.statistics)
+		default:
+			result, ok = rankFile(file.evidence, corpus.signals, corpus.statistics.documentFrequency, corpus.statistics.documents)
+		}
+		if ok {
 			results = append(results, result)
 		}
 	}
@@ -188,7 +226,7 @@ func Find(root string, query Query) ([]Result, error) {
 	if len(results) > MaxResults {
 		results = results[:MaxResults]
 	}
-	return enrichSymbols(root, results), nil
+	return results
 }
 
 func scanFiles(root string, files []string, signals []signal) []scannedFile {
@@ -235,15 +273,17 @@ func scanFile(root, relative string, signals []signal) scannedFile {
 	}
 	content := string(data)
 	if looksGenerated(content) {
-		return scannedFile{searched: true, found: make([]bool, len(signals))}
+		return scannedFile{searched: true, found: make([]bool, len(signals)), termFrequencies: make([]int, len(signals))}
 	}
 	contentTokens := significantTokens(content)
 	pathTokens := significantExactTokens(relative)
 	filenameTokens := significantExactTokens(filepath.Base(relative))
 	file := scannedFile{
-		evidence: fileEvidence{path: relative},
-		found:    make([]bool, len(signals)),
-		searched: true,
+		evidence:        fileEvidence{path: relative},
+		found:           make([]bool, len(signals)),
+		termFrequencies: make([]int, len(signals)),
+		documentLength:  len(contentTokens),
+		searched:        true,
 	}
 	for index, signal := range signals {
 		if _, ok := findExactTerms(pathTokens, signal.exactTerms); ok {
@@ -252,11 +292,12 @@ func scanFile(root, relative string, signals []signal) scannedFile {
 				signal: index, line: 1, column: 1, path: true, filename: filename,
 			})
 		}
-		positions := findContentTermPositions(contentTokens, signal.contentTerms, maxSymbolMatches)
+		positions, frequency := contentTermStatistics(contentTokens, signal.contentTerms, maxSymbolMatches)
 		if len(positions) == 0 {
 			continue
 		}
 		file.found[index] = true
+		file.termFrequencies[index] = frequency
 		for occurrence, position := range positions {
 			line, column, preview := matchLocation(content, position)
 			candidate := match{
@@ -281,11 +322,12 @@ func scanFile(root, relative string, signals []signal) scannedFile {
 	return file
 }
 
+type scoredMatch struct {
+	match
+	contribution float64
+}
+
 func rankFile(file fileEvidence, signals []signal, frequencies []int, documents int) (Result, bool) {
-	type scoredMatch struct {
-		match
-		contribution float64
-	}
 	var scored []scoredMatch
 	for _, evidence := range file.matches {
 		signal := signals[evidence.signal]
@@ -305,6 +347,53 @@ func rankFile(file fileEvidence, signals []signal, frequencies []int, documents 
 			scored = append(scored, scoredMatch{match: evidence, contribution: contribution})
 		}
 	}
+	return rankedResult(file, signals, scored)
+}
+
+func rankFileBM25(file scannedFile, signals []signal, statistics corpusStatistics) (Result, bool) {
+	const (
+		k1             = 1.2
+		b              = 0.75
+		pathWeight     = 6.0
+		filenameWeight = 2.0
+	)
+	var scored []scoredMatch
+	for _, evidence := range file.evidence.matches {
+		signal := signals[evidence.signal]
+		documentFrequency := statistics.documentFrequency[evidence.signal]
+		if statistics.documents == 0 {
+			continue
+		}
+		idf := math.Log(1 + (float64(statistics.documents-documentFrequency)+0.5)/(float64(documentFrequency)+0.5))
+		contribution := signal.weight * idf
+		if evidence.path {
+			contribution *= pathWeight
+			if evidence.filename {
+				contribution *= filenameWeight
+			}
+		} else {
+			if documentFrequency == 0 {
+				continue
+			}
+			termFrequency := file.termFrequencies[evidence.signal]
+			if termFrequency == 0 {
+				continue
+			}
+			lengthRatio := 1.0
+			if statistics.averageDocumentSize > 0 {
+				lengthRatio = float64(file.documentLength) / statistics.averageDocumentSize
+			}
+			tf := float64(termFrequency)
+			contribution *= tf * (k1 + 1) / (tf + k1*(1-b+b*lengthRatio))
+		}
+		if contribution > 0 {
+			scored = append(scored, scoredMatch{match: evidence, contribution: contribution})
+		}
+	}
+	return rankedResult(file.evidence, signals, scored)
+}
+
+func rankedResult(file fileEvidence, signals []signal, scored []scoredMatch) (Result, bool) {
 	if len(scored) == 0 {
 		return Result{}, false
 	}
@@ -355,7 +444,7 @@ func rankFile(file fileEvidence, signals []signal, frequencies []int, documents 
 				continue
 			}
 			candidate := symbolMatch{
-				Line: context.line, Column: context.column, Text: signals[context.signal].text,
+				Line: context.line, Column: context.column, Text: signals[context.signal].text, Kind: signals[context.signal].kind,
 			}
 			if !containsSymbolMatch(result.symbolMatches, candidate) {
 				result.symbolMatches = append(result.symbolMatches, candidate)
@@ -600,8 +689,13 @@ func findContentTerms(tokens []lexicalToken, terms []string) (int, bool) {
 }
 
 func findContentTermPositions(tokens []lexicalToken, terms []string, limit int) []int {
+	positions, _ := contentTermStatistics(tokens, terms, limit)
+	return positions
+}
+
+func contentTermStatistics(tokens []lexicalToken, terms []string, limit int) ([]int, int) {
 	if len(terms) == 0 || len(tokens) < len(terms) || limit < 1 {
-		return nil
+		return nil, 0
 	}
 	var positions []int
 	for start := 0; start+len(terms) <= len(tokens); start++ {
@@ -616,13 +710,14 @@ func findContentTermPositions(tokens []lexicalToken, terms []string, limit int) 
 			positions = append(positions, tokens[start].start)
 		}
 	}
+	frequency := len(positions)
 	if len(positions) > limit {
 		front := limit / 2
 		bounded := append([]int(nil), positions[:front]...)
 		bounded = append(bounded, positions[len(positions)-(limit-front):]...)
-		return bounded
+		return bounded, frequency
 	}
-	return positions
+	return positions, frequency
 }
 
 func findExactTerms(tokens []lexicalToken, terms []string) (int, bool) {
