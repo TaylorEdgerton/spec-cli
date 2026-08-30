@@ -187,17 +187,6 @@ func runDone(root string, args []string, input io.Reader, output io.Writer, inte
 	if workspace.Setup != nil {
 		return fmt.Errorf("Spec setup is incomplete; run `spec` to resume")
 	}
-	verification, err := workspace.Verification()
-	if err != nil {
-		return err
-	}
-	current, err := verifyrun.Current(root, verification)
-	if err != nil {
-		return err
-	}
-	if !current {
-		return fmt.Errorf("verification is not current and passing; run `spec verify`")
-	}
 	specPath := change.ActivePath(root)
 	data, err := os.ReadFile(specPath)
 	if os.IsNotExist(err) {
@@ -225,9 +214,10 @@ func runDone(root string, args []string, input io.Reader, output io.Writer, inte
 			return nil
 		}
 	}
+	reviewed := 0
 	for _, criterion := range criteria {
-		if !criterion.Checked {
-			return fmt.Errorf("all success criteria must be reviewed before the Spec can finish")
+		if criterion.Checked {
+			reviewed++
 		}
 	}
 	files, err := gitutil.ChangedFiles(root, workspace.BaseSHA)
@@ -250,7 +240,8 @@ func runDone(root string, args []string, input io.Reader, output io.Writer, inte
 				fmt.Fprintf(&detail, "  %s\n", file)
 			}
 		}
-		fmt.Fprintf(&detail, "\nVerification:\n  PASS\n\nSuccess criteria:\n  %d/%d reviewed", len(criteria), len(criteria))
+		fmt.Fprintf(&detail, "\nVerification:\n  %s\n\nSuccess criteria:\n  %d/%d reviewed",
+			verificationLabel(workspace), reviewed, len(criteria))
 		choice, stopped, err := runChoice(input, output, "Finish Spec?", detail.String(), []string{"Finish Spec", "Exit"})
 		if err != nil {
 			return err
@@ -260,6 +251,17 @@ func runDone(root string, args []string, input io.Reader, output io.Writer, inte
 		}
 	}
 	return finishSpec(root, workspace, args, output)
+}
+
+func verificationLabel(workspace state.Workspace) string {
+	verification, err := workspace.Verification()
+	if err != nil || verification == nil {
+		return "none recorded"
+	}
+	if verification.Passed {
+		return "PASS"
+	}
+	return "FAILED"
 }
 
 func finishSpec(root string, workspace state.Workspace, args []string, output io.Writer) error {
