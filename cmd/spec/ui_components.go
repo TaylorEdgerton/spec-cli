@@ -75,12 +75,33 @@ func uiPanelWith(runes lipgloss.Border, width, height int, border color.Color, t
 
 func uiBodyHeight(height int) int { return max(3, height-8) }
 
-func uiClampLines(lines []string, limit int) []string {
-	if limit < 1 || len(lines) <= limit {
-		return lines
+func uiViewportBody(body string, height, offset int, anchor string) (string, int) {
+	lines := strings.Split(body, "\n")
+	selectedLine := -1
+	if anchor != "" {
+		for index, line := range lines {
+			if strings.Contains(ansi.Strip(line), anchor) {
+				selectedLine = index
+				break
+			}
+		}
 	}
-	kept := append([]string(nil), lines[:limit-1]...)
-	return append(kept, uiMutedStyle.Render(fmt.Sprintf("… %d more lines (resize to see them)", len(lines)-limit+1)))
+	visible, next := (screenViewport{Height: height, Offset: offset}).visible(lines, selectedLine)
+	return strings.Join(visible, "\n"), next
+}
+
+func uiWorkflowBodyHeight(height int, header string) int {
+	return max(3, height-len(strings.Split(header, "\n"))-7)
+}
+
+func defaultSize(width, height int) (int, int) {
+	if width <= 0 {
+		width = 100
+	}
+	if height <= 0 {
+		height = 32
+	}
+	return width, height
 }
 
 func uiAppShell(width, height int, header, body, footer string) string {
@@ -100,9 +121,16 @@ func uiAppShell(width, height int, header, body, footer string) string {
 		bodyLines[index] = ansi.Truncate(line, max(1, width-4), "…")
 	}
 	body = strings.Join(bodyLines, "\n")
-	header, footer = ansi.Truncate(header, max(1, width-4), "…"), ansi.Truncate(footer, max(1, width-4), "…")
+	headerLines := strings.Split(header, "\n")
+	for index, line := range headerLines {
+		headerLines[index] = ansi.Truncate(line, max(1, width-4), "…")
+	}
+	header = strings.Join(headerLines, "\n")
+	footer = ansi.Truncate(footer, max(1, width-4), "…")
+	headerHeight := max(3, len(headerLines)+2)
+	bodyHeight = max(3, height-headerHeight-5)
 	return lipgloss.JoinVertical(lipgloss.Left,
-		uiPanel(width, 3, uiBlue, uiTitleStyle.Render(header), "", ""),
+		uiPanel(width, headerHeight, uiBlue, "", "", uiTitleStyle.Render(header)),
 		uiPanel(width, bodyHeight, uiBorder, "", "", body),
 		uiPanel(width, 3, uiBorder, "", "", footer),
 	)
@@ -118,6 +146,14 @@ func uiEmptyState(title, reason string) string {
 	}
 	lines = append(lines, uiMutedStyle.Render(reason))
 	return strings.Join(lines, "\n")
+}
+
+func uiHelpOverlay(pairs [][2]string) string {
+	lines := []string{uiTitleStyle.Render("Keys"), ""}
+	for _, pair := range pairs {
+		lines = append(lines, "  "+uiKeyStyle.Render(pair[0])+"  "+uiMutedStyle.Render(pair[1]))
+	}
+	return strings.Join(append(lines, "", uiMutedStyle.Render("  ? closes this help.")), "\n")
 }
 
 func uiKeyHints(pairs [][2]string, separator string) string {
