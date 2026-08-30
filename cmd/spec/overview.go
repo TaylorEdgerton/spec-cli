@@ -35,21 +35,30 @@ type overviewData struct {
 	Title, SpecID, Branch, Baseline, Intent, Scope string
 	StartedAt, Now                                 time.Time
 	Stats                                          state.ChangeStats
+	StatsRefreshed                                 bool
+	RefreshedAt                                    time.Time
 	Facts                                          overviewFacts
 }
+type overviewNext struct {
+	Title, Message string
+	Items          []screenItem
+}
 type overviewModel struct {
-	data          overviewData
-	stages        []overviewStage
-	status        string
-	width, height int
-	done          bool
-	help          bool
-	nav           string
-	cursor        int
-	viewport      int
+	data                overviewData
+	stages              []overviewStage
+	status              string
+	width, height       int
+	done                bool
+	help                bool
+	nav                 string
+	cursor              int
+	viewport            int
+	showBaselineDetails bool
 
 	copyPrompt func(string) error
 }
+
+const overviewLargeDriftFiles = 12
 
 func deriveOverviewStages(f overviewFacts) []overviewStage {
 	s := []overviewStage{{"intent", "Intent & Scope", stageComplete}, {"baseline", "Baseline", stageComplete}, {"plan", "Implementation Plan", stageOmitted}, {"implementation", "Implementation", stagePending}, {"review", "Review", stagePending}, {"evidence", "Evidence", stagePending}, {"complete", "Complete", stagePending}}
@@ -79,26 +88,52 @@ func deriveOverviewStages(f overviewFacts) []overviewStage {
 	return s
 }
 func newOverviewModel(d overviewData) *overviewModel {
-	model := &overviewModel{data: d, stages: deriveOverviewStages(d.Facts), copyPrompt: copyImplementationPrompt}
-	for index, stage := range model.stages {
-		if stage.Status == stageCurrent {
-			model.cursor = index
-			break
-		}
-	}
-	return model
+	return &overviewModel{data: d, stages: deriveOverviewStages(d.Facts), copyPrompt: copyImplementationPrompt}
 }
 
 func (m *overviewModel) screen() canonicalScreen {
-	items := make([]screenItem, 0, len(m.stages))
-	for _, stage := range m.stages {
-		action := map[string]string{"intent": actionDefinition, "plan": actionPlan, "review": actionReview, "evidence": actionEvidence, "complete": actionHistory}[stage.ID]
-		if stage.ID == "plan" && !m.data.Facts.PlanAvailable {
-			action = actionPlanCapture
-		}
-		items = append(items, screenItem{ID: "overview.stage." + stage.ID, Label: stage.Label, Selectable: true, Action: screenAction(action), Preview: stage})
+	next := m.next()
+	sections := []screenSection{{ID: "overview.next", Title: "NEXT", Items: next.Items}}
+	if m.largeBaselineDrift() {
+		sections = append(sections, screenSection{ID: "overview.drift", Title: "Baseline drift", Items: []screenItem{
+			{ID: "overview.drift.review", Label: "Review anyway", Selectable: true, Action: screenAction(actionReview)},
+			{ID: "overview.drift.details", Label: "View baseline details", Selectable: true, Action: screenAction(actionBaseline)},
+		}})
 	}
-	return canonicalScreen{Sections: []screenSection{{ID: "progress", Title: "Progress", Items: items}}, Cursor: m.cursor}
+	return canonicalScreen{Sections: sections, Cursor: m.cursor}
+}
+
+func (m *overviewModel) next() overviewNext {
+	switch {
+	case m.data.Facts.SetupActive:
+		return overviewNext{Title: "Define change", Message: "Finish the intent and expected behaviour before implementation starts.", Items: []screenItem{
+			{ID: "overview.next.definition", Label: "Continue defining change", Selectable: true, Action: screenAction(actionDefinition)},
+		}}
+	case m.data.Facts.Completed:
+		return overviewNext{Title: "Complete", Message: "This Spec is complete. Its retained change record is available in History.", Items: []screenItem{
+			{ID: "overview.next.history", Label: "Open completed Spec history", Selectable: true, Action: screenAction(actionHistory)},
+		}}
+	case m.data.Facts.EvidenceCount > 0 || m.data.Facts.ReviewEntered:
+		message := "Open Review to refresh current workspace changes before deciding whether the available evidence is convincing."
+		if m.data.StatsRefreshed {
+			message = "Review the explicitly refreshed changes and decide whether the available evidence is convincing."
+		}
+		return overviewNext{Title: "Review", Message: message, Items: []screenItem{
+			{ID: "overview.next.review", Label: "Review current workspace changes", Selectable: true, Action: screenAction(actionReview)},
+			{ID: "overview.next.evidence", Label: "Review tests and evidence", Selectable: true, Action: screenAction(actionEvidence)},
+			{ID: "overview.next.summary", Label: "Review change summary", Selectable: true, Action: screenAction(actionSummary)},
+		}}
+	default:
+		plan := screenItem{ID: "overview.next.plan.capture", Label: "Capture AI plan (optional)", Selectable: true, Action: screenAction(actionPlanCapture)}
+		if m.data.Facts.PlanAvailable {
+			plan = screenItem{ID: "overview.next.plan.view", Label: "View accepted AI plan", Selectable: true, Action: screenAction(actionPlan)}
+		}
+		return overviewNext{Title: "Implementation", Message: "Prompt is ready. Implement the change with your preferred AI.", Items: []screenItem{
+			{ID: "overview.next.prompt", Label: "Copy implementation prompt", Selectable: true, Action: screenAction(actionPrompt)},
+			plan,
+			{ID: "overview.next.review", Label: "Review current workspace changes", Selectable: true, Action: screenAction(actionReview)},
+		}}
+	}
 }
 func (m *overviewModel) Init() tea.Cmd { return nil }
 func (m *overviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -141,7 +176,7 @@ func (m *overviewModel) key(keystroke string) tea.Cmd {
 		m.leave(actionHistory)
 		return tea.Quit
 	case "enter":
-		return m.openCurrentStage()
+		return m.openSelectedAction()
 	case "b", "esc":
 		m.leave(actionBack)
 		return tea.Quit
@@ -154,19 +189,22 @@ func (m *overviewModel) key(keystroke string) tea.Cmd {
 
 func (m *overviewModel) leave(action string) { m.done, m.nav = true, action }
 
-func (m *overviewModel) openCurrentStage() tea.Cmd {
-	screen := m.screen()
-	items := screen.selectableItems()
-	if len(items) == 0 {
-		return nil
-	}
-	stage, ok := items[clamp(m.cursor, 0, len(items)-1)].Preview.(overviewStage)
+func (m *overviewModel) openSelectedAction() tea.Cmd {
+	item, ok := m.screen().selectedItem()
 	if !ok {
 		return nil
 	}
-	action := string(screen.activate())
+	action := string(item.Action)
+	switch action {
+	case actionPrompt:
+		m.copySelectedPrompt()
+		return nil
+	case actionBaseline:
+		m.showBaselineDetails = true
+		m.status = "Showing the baseline and refresh provenance used by this Overview."
+		return nil
+	}
 	if action == "" {
-		m.status = stage.Label + " happens outside Spec; return with `spec` when it is done."
 		return nil
 	}
 	m.leave(action)
@@ -185,7 +223,7 @@ func (m *overviewModel) copySelectedPrompt() {
 }
 
 func (m *overviewModel) hints() [][2]string {
-	return [][2]string{{"enter", "open stage"}, {"p", "prompt"}, {"r", "review"},
+	return [][2]string{{"↑/↓", "select"}, {"enter", "open"}, {"p", "prompt"}, {"r", "review"},
 		{"h", "history"}, {"?", "help"}, {"b", "back"}, {"g", "home"}}
 }
 func (m *overviewModel) View() tea.View {
@@ -203,56 +241,130 @@ func (m *overviewModel) View() tea.View {
 	if len(base) > 7 {
 		base = base[:7]
 	}
-	elapsed := max(0, int(m.data.Now.Sub(m.data.StartedAt)/time.Minute))
-	completed, total := 0, 0
-	for _, stage := range m.stages {
-		if stage.Status != stageOmitted {
-			total++
-		}
-		if stage.Status == stageComplete {
-			completed++
-		}
-	}
-	percent := 0
-	if total > 0 {
-		percent = completed * 100 / total
-	}
-	filled := percent * 20 / 100
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", 20-filled)
-	lines := []string{uiTitleStyle.Render("Intent"), m.data.Intent, "", uiTitleStyle.Render("Expected behaviour"), emptyAs(m.data.Scope, "No scope was provided."), "", uiTitleStyle.Render("Progress"), fmt.Sprintf("  %s  %d%%", bar, percent)}
-	progress := m.screen().Sections[0].Items
-	for i, item := range progress {
-		s := item.Preview.(overviewStage)
-		mark := "○"
-		switch s.Status {
-		case stageComplete:
-			mark = "✓"
-		case stageCurrent:
-			mark = "●"
-		case stageOmitted:
-			mark = "–"
-		}
-		row := fmt.Sprintf("  %s %d  %s", mark, i+1, s.Label)
-		if i == m.cursor {
-			row = uiSelectedRow("> "+strings.TrimSpace(row), 0)
-		}
-		lines = append(lines, row)
-	}
-	lines = append(lines, "", uiTitleStyle.Render("At a glance"), fmt.Sprintf("  Changed files     %d", m.data.Stats.Files), fmt.Sprintf("  + lines           %d", m.data.Stats.Additions), fmt.Sprintf("  - lines           %d", m.data.Stats.Deletions), fmt.Sprintf("  Tests             %d", m.data.Stats.TestsAdded))
-	if m.status != "" {
-		lines = append(lines, "", uiMutedStyle.Render(m.status))
-	}
-	header := fmt.Sprintf("%s · %s  OPEN\nGit: %s · baseline %s  %d min", m.data.SpecID, m.data.Title, m.data.Branch, base, elapsed)
+	lines := m.bodyLines(max(20, w-8), h < 30)
+	header := fmt.Sprintf("%s · %s  OPEN\n%s · baseline %s · %s", m.data.SpecID, m.data.Title, m.data.Branch, base, homeElapsed(m.data.StartedAt, m.data.Now))
 	body := strings.Join(lines, "\n")
 	if m.help {
 		body = uiHelpOverlay(m.hints())
 	}
 	anchor := ""
-	if items := m.screen().selectableItems(); len(items) > 0 {
-		anchor = items[clamp(m.cursor, 0, len(items)-1)].Label
+	if item, ok := m.screen().selectedItem(); ok {
+		anchor = item.Label
 	}
 	body, m.viewport = uiViewportBody(body, uiWorkflowBodyHeight(h, header), m.viewport, anchor)
 	return tea.NewView(uiAppShell(w, h, header, body, uiKeyHints(m.hints(), "    ")))
+}
+
+func (m *overviewModel) bodyLines(width int, compact bool) []string {
+	lines := []string{uiTitleStyle.Render("Intent"), emptyAs(m.data.Intent, "No intent was provided."), uiTitleStyle.Render("Expected behaviour"), emptyAs(m.data.Scope, "No expected behaviour was provided.")}
+	if compact {
+		lines = []string{
+			uiTitleStyle.Render("Intent") + "  " + emptyAs(m.data.Intent, "No intent was provided."),
+			uiTitleStyle.Render("Expected behaviour") + "  " + emptyAs(m.data.Scope, "No expected behaviour was provided."),
+		}
+	}
+	next := m.next()
+	nextMessage := next.Message
+	if m.status != "" {
+		nextMessage = m.status
+	}
+	nextLines := []string{uiTitleStyle.Render(next.Title) + " · " + nextMessage}
+	selected, _ := m.screen().selectedItem()
+	for _, item := range next.Items {
+		row := "  " + item.Label
+		if item.ID == selected.ID {
+			row = uiSelectedRow("> "+item.Label, 0)
+		}
+		nextLines = append(nextLines, row)
+	}
+	lines = append(lines, uiPanel(width, len(nextLines)+2, uiPurple, "NEXT", "", strings.Join(nextLines, "\n")))
+	if compact {
+		lines = append(lines, uiTitleStyle.Render("Change lifecycle"))
+		lines = append(lines, m.compactLifecycleLines()...)
+	} else {
+		lines = append(lines, uiTitleStyle.Render("Change lifecycle"))
+		lines = append(lines, m.lifecycleLines()...)
+	}
+	lines = append(lines, uiTitleStyle.Render("Since baseline"))
+	base := shortSHA(m.data.Baseline)
+	if m.largeBaselineDrift() {
+		lines = append(lines, uiLineStyle.Render(fmt.Sprintf("! %d files have changed since baseline %s.", m.data.Stats.Files, base)), "  This change may contain unrelated work.", m.driftActionLine(selected))
+	} else if !m.data.StatsRefreshed {
+		lines = append(lines, "  Not refreshed in this session.", "  Open Review to refresh actual Git state since baseline "+base+".")
+	} else {
+		lines = append(lines,
+			fmt.Sprintf("  Files %d   Lines +%d -%d   Tests changed %d", m.data.Stats.Files, m.data.Stats.Additions, m.data.Stats.Deletions, m.data.Stats.TestsAdded),
+			"  Cached from explicit refresh "+m.data.RefreshedAt.UTC().Format("15:04 UTC"))
+	}
+	if m.showBaselineDetails {
+		lines = append(lines, uiTitleStyle.Render("Baseline details"), "  Commit   "+emptyDash(m.data.Baseline), "  Started  "+homeElapsed(m.data.StartedAt, m.data.Now))
+		if m.data.StatsRefreshed {
+			lines = append(lines, "  Facts    cached from explicit Review refresh at "+m.data.RefreshedAt.UTC().Format(time.RFC3339))
+		}
+	}
+	return lines
+}
+
+func (m *overviewModel) lifecycleLines() []string {
+	base := shortSHA(m.data.Baseline)
+	lines := make([]string, 0, len(m.stages))
+	for _, stage := range m.stages {
+		mark := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○", stageOmitted: "–"}[stage.Status]
+		detail := ""
+		switch stage.ID {
+		case "baseline":
+			detail = base
+		case "plan":
+			if stage.Status == stageOmitted {
+				detail = "optional"
+			}
+		}
+		if stage.Status == stageCurrent {
+			detail = "CURRENT"
+		}
+		lines = append(lines, fmt.Sprintf("  %s %-28s %s", mark, stage.Label, detail))
+	}
+	return lines
+}
+
+func (m *overviewModel) compactLifecycleLines() []string {
+	stageText := func(id, label string) string {
+		for _, stage := range m.stages {
+			if stage.ID == id {
+				mark := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○", stageOmitted: "–"}[stage.Status]
+				detail := ""
+				if stage.Status == stageCurrent {
+					detail = " CURRENT"
+				}
+				return mark + " " + label + detail
+			}
+		}
+		return "○ " + label
+	}
+	planDetail := "optional"
+	if m.data.Facts.PlanAvailable {
+		planDetail = "accepted"
+	}
+	return []string{
+		fmt.Sprintf("  %s   %s %s   %s %s", stageText("intent", "Intent & Scope"), stageText("baseline", "Baseline"), shortSHA(m.data.Baseline), stageText("plan", "Implementation Plan"), planDetail),
+		fmt.Sprintf("  %s   %s   %s   %s", stageText("implementation", "Implementation"), stageText("review", "Review"), stageText("evidence", "Evidence"), stageText("complete", "Complete")),
+	}
+}
+
+func (m *overviewModel) driftActionLine(selected screenItem) string {
+	items := m.screen().Sections[1].Items
+	labels := make([]string, len(items))
+	for index, item := range items {
+		labels[index] = "[ " + item.Label + " ]"
+		if item.ID == selected.ID {
+			labels[index] = uiSelectedRow("> [ "+item.Label+" ]", 0)
+		}
+	}
+	return "  " + strings.Join(labels, "   ")
+}
+
+func (m *overviewModel) largeBaselineDrift() bool {
+	return m.data.StatsRefreshed && m.data.Stats.Files > overviewLargeDriftFiles
 }
 func (m *overviewModel) currentStage() (overviewStage, bool) {
 	for _, s := range m.stages {
@@ -288,15 +400,6 @@ func loadOverview(root string, now time.Time) (overviewData, error) {
 		return d, e
 	}
 	d.Facts.EvidenceCount = len(runs)
-	seen := map[string]bool{}
-	for _, run := range runs {
-		for _, test := range run.Tests {
-			if test.ID != "" {
-				seen[test.ID] = true
-			}
-		}
-	}
-	d.Stats.TestsAdded = len(seen)
 	events, e := w.TimelineEvents()
 	if e != nil {
 		return d, e
