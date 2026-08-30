@@ -73,6 +73,16 @@ func uiPanelWith(runes lipgloss.Border, width, height int, border color.Color, t
 	return strings.Join(lines, "\n")
 }
 
+func uiBodyHeight(height int) int { return max(3, height-8) }
+
+func uiClampLines(lines []string, limit int) []string {
+	if limit < 1 || len(lines) <= limit {
+		return lines
+	}
+	kept := append([]string(nil), lines[:limit-1]...)
+	return append(kept, uiMutedStyle.Render(fmt.Sprintf("… %d more lines (resize to see them)", len(lines)-limit+1)))
+}
+
 func uiAppShell(width, height int, header, body, footer string) string {
 	width, height = max(1, width), max(1, height)
 	if height < 9 {
@@ -82,7 +92,15 @@ func uiAppShell(width, height int, header, body, footer string) string {
 			ansi.Truncate(footer, width, "…"),
 		}, "\n")
 	}
-	bodyHeight := max(3, height-6)
+	bodyHeight := uiBodyHeight(height)
+	// A body line wider than the panel soft-wraps and pushes the shell past the
+	// terminal height, so cut every line to the panel's inner width first.
+	bodyLines := strings.Split(body, "\n")
+	for index, line := range bodyLines {
+		bodyLines[index] = ansi.Truncate(line, max(1, width-4), "…")
+	}
+	body = strings.Join(bodyLines, "\n")
+	header, footer = ansi.Truncate(header, max(1, width-4), "…"), ansi.Truncate(footer, max(1, width-4), "…")
 	return lipgloss.JoinVertical(lipgloss.Left,
 		uiPanel(width, 3, uiBlue, uiTitleStyle.Render(header), "", ""),
 		uiPanel(width, bodyHeight, uiBorder, "", "", body),

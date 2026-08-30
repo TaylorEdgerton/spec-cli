@@ -44,7 +44,10 @@ const (
 )
 
 type Integration struct {
-	Symbol       string
+	Symbol string
+	// Parent is the enclosing symbol a discovered relationship belongs to. It is
+	// empty for relationships an agent declared in its plan.
+	Parent       string
 	Path         string
 	Line         int
 	Relationship string
@@ -195,6 +198,7 @@ func projectIntegrations(plan *state.StoredChangePlan, changes []gitutil.FileCha
 				}
 				integrations = append(integrations, Integration{
 					Symbol:       related.Name,
+					Parent:       symbol.Name,
 					Path:         path,
 					Line:         related.Line,
 					Relationship: related.Relation,

@@ -91,6 +91,9 @@ func TestIntegrationProjectionPreservesEvidencePrecisionAndDeclaredClaims(t *tes
 	if projection.Integrations[1].Precision != PrecisionPrecise || projection.Integrations[2].Precision != PrecisionStructural {
 		t.Fatalf("discovered precision = %+v", projection.Integrations)
 	}
+	if projection.Integrations[0].Parent != "" || projection.Integrations[1].Parent != "ensureIndex" || projection.Integrations[2].Parent != "ensureIndex" {
+		t.Fatalf("enclosing symbol = %+v", projection.Integrations)
+	}
 }
 
 func TestAssociateHunksKeepsOrderAndUsesNearestEnclosingSymbol(t *testing.T) {
