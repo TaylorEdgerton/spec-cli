@@ -26,12 +26,24 @@ type historyModel struct {
 	width, height int
 	done          bool
 	stopped       bool
+	help          bool
+	nav           string
+	viewport      int
 
 	readArchive func(string) (string, error)
 }
 
 func newHistoryModel(dir string, records []state.History, stats bool) *historyModel {
 	return &historyModel{dir: dir, all: records, stats: stats, readArchive: readSpecArchive}
+}
+
+func (m *historyModel) screen() canonicalScreen {
+	items := make([]screenItem, 0, len(m.visible()))
+	for index, record := range m.visible() {
+		items = append(items, screenItem{ID: fmt.Sprintf("history.%d", index), Label: record.Title, Selectable: true, Preview: record})
+	}
+	section := screenSection{ID: "history", Title: "Spec History", Items: items, EmptyReason: "No completed Specs are recorded for this workspace yet."}
+	return canonicalScreen{Sections: []screenSection{section}, Cursor: m.cursor}
 }
 
 // visible applies the search filter and presents completed Specs newest first.
@@ -50,11 +62,13 @@ func (m *historyModel) visible() []state.History {
 }
 
 func (m *historyModel) selected() (state.History, bool) {
-	records := m.visible()
-	if len(records) == 0 {
+	screen := m.screen()
+	items := screen.selectableItems()
+	if len(items) == 0 {
 		return state.History{}, false
 	}
-	return records[clamp(m.cursor, 0, len(records)-1)], true
+	record, ok := items[clamp(m.cursor, 0, len(items)-1)].Preview.(state.History)
+	return record, ok
 }
 
 func (m *historyModel) Init() tea.Cmd { return nil }
@@ -64,7 +78,7 @@ func (m *historyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
 	case tea.InterruptMsg:
-		m.done, m.stopped = true, true
+		m.leave(actionQuit)
 		return m, tea.Quit
 	case tea.KeyPressMsg:
 		return m, m.key(v)
@@ -87,36 +101,65 @@ func (m *historyModel) key(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	switch msg.Keystroke() {
 	case "up", "k":
+		if m.spec != "" {
+			m.viewport = max(0, m.viewport-1)
+			return nil
+		}
 		m.move(-1)
 	case "down", "j":
+		if m.spec != "" {
+			m.viewport++
+			return nil
+		}
 		m.move(1)
+	case "pgup":
+		m.viewport = max(0, m.viewport-max(1, m.height/2))
+	case "pgdown":
+		m.viewport += max(1, m.height/2)
 	case "/":
 		m.searching, m.status = true, ""
 	case "s":
 		m.stats = !m.stats
 	case "t":
 		m.timeline = !m.timeline
+	case "?":
+		m.help = !m.help
 	case "enter":
 		m.openSelected()
 	case "esc", "b":
 		if m.spec != "" {
-			m.spec, m.status = "", ""
+			m.spec, m.status, m.viewport = "", "", 0
 			return nil
 		}
-		m.done = true
+		m.leave(actionBack)
 		return tea.Quit
-	case "q":
-		m.done = true
-		return tea.Quit
-	case "ctrl+c":
-		m.done, m.stopped = true, true
+	case "q", "ctrl+c":
+		m.leave(actionQuit)
 		return tea.Quit
 	}
 	return nil
 }
 
+func (m *historyModel) leave(action string) {
+	m.done, m.nav = true, action
+	m.stopped = action == actionQuit
+}
+
+func (m *historyModel) hints() [][2]string {
+	if m.spec != "" {
+		return [][2]string{{"esc", "close Spec"}, {"?", "help"}, {"q", "exit"}}
+	}
+	if m.searching {
+		return [][2]string{{"type", "search"}, {"enter", "keep"}, {"esc", "clear"}}
+	}
+	return [][2]string{
+		{"↑/↓", "select"}, {"enter", "open Spec"}, {"/", "search"},
+		{"s", "stats"}, {"t", "timeline"}, {"?", "help"}, {"b", "back"}, {"q", "exit"},
+	}
+}
+
 func (m *historyModel) move(delta int) {
-	count := len(m.visible())
+	count := len(m.screen().selectableItems())
 	if count == 0 {
 		return
 	}
@@ -160,51 +203,66 @@ func (m *historyModel) View() tea.View {
 		body = append(body, "", uiMutedStyle.Render(m.status))
 	}
 	header := uiSplit("Spec history", fmt.Sprintf("%d completed", len(m.all)), max(1, width-4))
-	rendered := strings.Split(strings.Join(body, "\n"), "\n")
-	return tea.NewView(uiAppShell(width, height, header,
-		strings.Join(uiClampLines(rendered, uiBodyHeight(height)), "\n"), m.footer()))
+	if m.timeline {
+		if record, ok := m.selected(); ok {
+			header = fmt.Sprintf("%s · Timeline", emptyDash(record.SpecID))
+		}
+	}
+	rendered := strings.Join(body, "\n")
+	anchor := ""
+	if m.spec == "" {
+		if item, ok := m.screen().selectedItem(); ok {
+			anchor = item.Label
+		}
+	}
+	rendered, m.viewport = uiViewportBody(rendered, uiWorkflowBodyHeight(height, header), m.viewport, anchor)
+	return tea.NewView(uiAppShell(width, height, header, rendered, m.footer()))
 }
 
-func (m *historyModel) footer() string {
-	if m.spec != "" {
-		return uiKeyHints([][2]string{{"esc", "close Spec"}, {"q", "quit"}}, "  ")
-	}
-	if m.searching {
-		return uiKeyHints([][2]string{{"type", "search"}, {"enter", "keep"}, {"esc", "clear"}}, "  ")
-	}
-	return uiKeyHints([][2]string{
-		{"↑/↓", "select"}, {"enter", "open Spec"}, {"/", "search"},
-		{"s", "stats"}, {"t", "timeline"}, {"b", "back"},
-	}, "  ")
-}
+func (m *historyModel) footer() string { return uiKeyHints(m.hints(), "  ") }
 
 func (m *historyModel) body() []string {
+	if m.help {
+		return []string{uiHelpOverlay(m.hints())}
+	}
 	if m.spec != "" {
 		return append([]string{uiTitleStyle.Render("Archived Spec (read-only)"), ""}, strings.Split(m.spec, "\n")...)
+	}
+	if m.timeline {
+		record, ok := m.selected()
+		if !ok {
+			return []string{uiEmptyState("Timeline", "No completed Spec is selected.")}
+		}
+		return append([]string{uiTitleStyle.Render("Timeline"), ""}, timelineLines(timelineEntries(record))...)
 	}
 	var lines []string
 	if m.searching || m.search.value != "" {
 		lines = append(lines, "  "+uiMutedStyle.Render("Search: ")+m.search.view(), "")
 	}
-	records := m.visible()
-	if len(records) == 0 {
+	items := m.screen().selectableItems()
+	if len(items) == 0 {
 		reason := "No completed Specs are recorded for this workspace yet."
 		if strings.TrimSpace(m.search.value) != "" {
 			reason = "No completed Specs match this search. Press esc to clear it."
 		}
 		return append(lines, uiEmptyState("", reason))
 	}
-	cursor := clamp(m.cursor, 0, len(records)-1)
-	for index, record := range records {
-		row := fmt.Sprintf("%-10s %-10s %-9s %s", record.FinishedAt.UTC().Format("2006-01-02"),
-			emptyDash(record.SpecID), historyStatus(record), record.Title)
+	cursor := clamp(m.cursor, 0, len(items)-1)
+	lines = append(lines,
+		fmt.Sprintf("  %-10s %-45s %s", "Date", "Spec", "Status"),
+		"  "+strings.Repeat("─", 68),
+	)
+	for index, item := range items {
+		record := item.Preview.(state.History)
+		identity := fmt.Sprintf("%s · %s", emptyDash(record.SpecID), record.Title)
+		row := fmt.Sprintf("%-10s %-45s %s", record.FinishedAt.UTC().Format("2006-01-02"), identity, historyStatus(record))
 		if index == cursor {
 			lines = append(lines, uiSelectedRow("> "+row, 0))
 		} else {
 			lines = append(lines, "  "+row)
 		}
 	}
-	record := records[cursor]
+	record := items[cursor].Preview.(state.History)
 	lines = append(lines, "", uiTitleStyle.Render("Selected"), "  "+record.Title)
 	if strings.TrimSpace(record.Scope) != "" {
 		lines = append(lines, "  Scope: "+record.Scope)
@@ -213,10 +271,6 @@ func (m *historyModel) body() []string {
 		emptyDash(shortSHA(record.BaseSHA)), emptyDash(record.SpecArchive)))
 	if m.stats {
 		lines = append(lines, historyStatsLines(record)...)
-	}
-	if m.timeline {
-		lines = append(lines, "", uiTitleStyle.Render("Timeline"))
-		lines = append(lines, timelineLines(timelineEntries(record))...)
 	}
 	return lines
 }
@@ -266,14 +320,14 @@ func loadHistory(root string) (string, []state.History, error) {
 	return workspace.Dir, records, err
 }
 
-func runHistory(root string, stats bool, input io.Reader, output io.Writer) (bool, error) {
+func runHistory(root string, stats bool, input io.Reader, output io.Writer) (string, error) {
 	dir, records, err := loadHistory(root)
 	if err != nil {
-		return false, err
+		return actionQuit, err
 	}
 	final, err := tea.NewProgram(newHistoryModel(dir, records, stats), tea.WithInput(input), tea.WithOutput(output)).Run()
 	if err != nil {
-		return false, err
+		return actionQuit, err
 	}
-	return final.(*historyModel).stopped, nil
+	return final.(*historyModel).nav, nil
 }
