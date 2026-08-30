@@ -85,8 +85,11 @@ func TestShellScreensShareExitBackAndHelpKeys(t *testing.T) {
 	for name, model := range newScreens(t) {
 		model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
 		model.Update(key('q', "q"))
-		if navigation := navigationOf(model); navigation != actionQuit {
-			t.Fatalf("%s q navigation = %q, want %q", name, navigation, actionQuit)
+		if navigation := navigationOf(model); navigation != actionNone {
+			t.Fatalf("%s q navigation = %q, want no direct quit", name, navigation)
+		}
+		if strings.Contains(ansi.Strip(model.View().Content), "q exit") || strings.Contains(ansi.Strip(model.View().Content), "q cancel") {
+			t.Fatalf("%s advertises q outside Home", name)
 		}
 	}
 

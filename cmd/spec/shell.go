@@ -7,12 +7,15 @@ import (
 type shellScreen string
 
 const (
+	screenHome       shellScreen = "home"
 	screenDefinition shellScreen = "definition"
 	screenOverview   shellScreen = "overview"
 	screenPlan       shellScreen = "plan"
 	screenReview     shellScreen = "review"
 	screenSummary    shellScreen = "summary"
 	screenHistory    shellScreen = "history"
+	screenExplore    shellScreen = "explore"
+	screenDocuments  shellScreen = "documents"
 	screenBack       shellScreen = "back"
 	screenExit       shellScreen = "exit"
 	screenStay       shellScreen = ""
@@ -21,7 +24,16 @@ const (
 const (
 	actionNone       = ""
 	actionBack       = "back"
+	actionHome       = "home"
 	actionQuit       = "quit"
+	actionInitialize = "initialize"
+	actionNew        = "new"
+	actionResume     = "resume"
+	actionExplore    = "explore"
+	actionRecent     = "recent"
+	actionDocuments  = "documents"
+	actionREADME     = "create-readme"
+	actionRunbook    = "create-runbook"
 	actionDefinition = "definition"
 	actionOverview   = "overview"
 	actionPlan       = "plan"
@@ -35,6 +47,8 @@ const (
 
 func screenForAction(action string) shellScreen {
 	switch action {
+	case actionHome:
+		return screenHome
 	case actionQuit:
 		return screenExit
 	case actionBack, actionChanges:
@@ -53,6 +67,10 @@ func screenForAction(action string) shellScreen {
 		return screenSummary
 	case actionHistory:
 		return screenHistory
+	case actionExplore:
+		return screenExplore
+	case actionDocuments:
+		return screenDocuments
 	}
 	return screenStay
 }
