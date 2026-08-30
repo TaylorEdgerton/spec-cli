@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestHomeMenusReflectWorkspaceState(t *testing.T) {
@@ -25,6 +28,51 @@ func TestHomeMenusReflectWorkspaceState(t *testing.T) {
 	}
 	if got, want := createDocumentMenuItems(), []string{"README", "Runbook", "Back"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("document menu = %v, want %v", got, want)
+	}
+}
+
+func TestFramedHomeUsesOneCanonicalOrderForRenderingAndNavigation(t *testing.T) {
+	started := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	model := newHomeModel(homeData{
+		Registered: true, GitWorkspace: true, Active: true,
+		Title: "Disable automatic indexing", Stage: "Implementation",
+		Branch: "main", GitState: "clean", StartedAt: started, Now: started.Add(2*time.Hour + 14*time.Minute),
+	})
+	want := []string{"home.resume", "home.explore", "home.recent", "home.documents", "home.exit"}
+	if got := model.screen().selectableItemIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("home canonical order = %v, want %v", got, want)
+	}
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	plain := ansi.Strip(model.View().Content)
+	assertTextOrder(t, plain, "Active change", "Disable automatic indexing", "Status", "Implementation", "Started", "2h 14m ago", "Resume change", "Explore codebase", "Recent changes", "Create a doc", "Exit")
+	if !strings.Contains(plain, "esc stays") || lipgloss.Width(model.View().Content) > 80 || lipgloss.Height(model.View().Content) > 24 {
+		t.Fatalf("home frame contract failed:\n%s", plain)
+	}
+
+	before := model.data
+	model.Update(key(tea.KeyDown, ""))
+	if model.data != before {
+		t.Fatalf("cursor movement mutated home facts: before=%+v after=%+v", before, model.data)
+	}
+}
+
+func TestHomeCoversIdleAndUnregisteredWorkspaceActions(t *testing.T) {
+	idle := newHomeModel(homeData{Registered: true, GitWorkspace: true, Branch: "main", GitState: "clean"})
+	if got, want := idle.screen().selectableItemIDs(), []string{"home.new", "home.explore", "home.recent", "home.documents", "home.exit"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("idle actions = %v, want %v", got, want)
+	}
+	if plain := ansi.Strip(idle.View().Content); !strings.Contains(plain, "No active change") || !strings.Contains(plain, "Create a change") {
+		t.Fatalf("idle Home summary missing:\n%s", plain)
+	}
+
+	for name, data := range map[string]homeData{
+		"unregistered": {GitWorkspace: true},
+		"no-git":       {},
+	} {
+		model := newHomeModel(data)
+		if got, want := model.screen().selectableItemIDs(), []string{"home.initialize", "home.exit"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s actions = %v, want %v", name, got, want)
+		}
 	}
 }
 

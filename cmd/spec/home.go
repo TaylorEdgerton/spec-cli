@@ -22,45 +22,11 @@ func runHome(input io.Reader, output io.Writer, interactive bool) error {
 		return printWorkflowStatus(root, output)
 	}
 	if rootErr != nil {
-		choice, stopped, err := runChoice(input, output, "Spec", "This directory is not a Git workspace.", []string{"Initialize workspace", "Exit"})
-		if err != nil || stopped || choice == 1 {
-			return err
-		}
-		return runInit(output)
+		_, err := runWorkflowApp("", screenHome, input, output)
+		return err
 	}
-	for {
-		workspace, err := state.Load(root)
-		if err != nil {
-			choice, stopped, chooseErr := runChoice(input, output, "Spec", "This Git workspace is not registered.", []string{"Initialize workspace", "Exit"})
-			if chooseErr != nil || stopped || choice == 1 {
-				return chooseErr
-			}
-			return runInit(output)
-		}
-		choice, stopped, err := runChoice(input, output, "Spec", "", homeMenuItems(workspace.Active))
-		if err != nil || stopped || choice == 4 {
-			return err
-		}
-		switch choice {
-		case 0:
-			if workspace.Active {
-				return resumeActiveSpec(root, input, output)
-			}
-			return runNew(nil, input, output, true)
-		case 1:
-			if stopped, exploreErr := runExploreCodebase(root, input, output); exploreErr != nil || stopped {
-				return exploreErr
-			}
-		case 2:
-			if stopped, recentErr := runRecentChanges(root, input, output); recentErr != nil || stopped {
-				return recentErr
-			}
-		case 3:
-			if stopped, documentErr := runCreateDocument(root, input, output); documentErr != nil || stopped {
-				return documentErr
-			}
-		}
-	}
+	_, err := runWorkflowApp(root, screenHome, input, output)
+	return err
 }
 
 func homeMenuItems(active bool) []string {
