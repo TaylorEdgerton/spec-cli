@@ -30,34 +30,9 @@ const (
 )
 
 var (
-	explorerBlue    = lipgloss.Color("#67B7E1")
-	explorerPurple  = lipgloss.Color("#C58AF9")
-	explorerTeal    = lipgloss.Color("#6FD3C4")
-	explorerGreen   = lipgloss.Color("#89D185")
-	explorerYellow  = lipgloss.Color("#E8C547")
-	explorerMuted   = lipgloss.Color("#8393A7")
-	explorerBorder  = lipgloss.Color("#52647A")
-	explorerSurface = lipgloss.Color("#252B35")
-	explorerViolet  = lipgloss.Color("#4B3A75")
-
-	explorerTitleStyle    = lipgloss.NewStyle().Foreground(explorerBlue).Bold(true)
-	explorerSymbolStyle   = lipgloss.NewStyle().Foreground(explorerPurple)
-	explorerMutedStyle    = lipgloss.NewStyle().Foreground(explorerMuted)
-	explorerSelectedStyle = lipgloss.NewStyle().Background(explorerViolet).Foreground(lipgloss.BrightWhite).Bold(true)
-	explorerCurrentStyle  = lipgloss.NewStyle().Background(explorerSurface)
-	explorerLineStyle     = lipgloss.NewStyle().Foreground(explorerYellow).Bold(true)
-	explorerKeyStyle      = lipgloss.NewStyle().Foreground(explorerBlue).Bold(true)
-	explorerEvidenceStyle = lipgloss.NewStyle().Foreground(explorerGreen)
-
-	// ponytail: lipgloss has no dashed border preset, so declare the four runes.
-	explorerDashedBorder = lipgloss.Border{
-		Top: "┄", Bottom: "┄", Left: "┆", Right: "┆",
-		TopLeft: "╭", TopRight: "╮", BottomLeft: "╰", BottomRight: "╯",
-	}
-
 	explorerChipColors = map[string]color.Color{
-		"f": explorerBlue, "fn": explorerTeal, "v": explorerPurple,
-		"c": explorerYellow, "t": explorerGreen,
+		"f": uiBlue, "fn": uiTeal, "v": uiPurple,
+		"c": uiYellow, "t": uiGreen,
 	}
 )
 
@@ -649,20 +624,20 @@ func (model *contextExplorerModel) renderHeader(width int) string {
 	badge := ""
 	if !model.querying && width >= explorerWideWidth {
 		badge = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).BorderForeground(explorerBorder).
-			Padding(0, 1).Foreground(explorerMuted).Render("One-hop relationships")
+			Border(lipgloss.RoundedBorder()).BorderForeground(uiBorder).
+			Padding(0, 1).Foreground(uiMuted).Render("One-hop relationships")
 	}
-	queryLine := explorerTitleStyle.Render("Query: ") + query
+	queryLine := uiTitleStyle.Render("Query: ") + query
 	breadcrumb := model.breadcrumb()
 	if model.querying {
-		breadcrumb = explorerMutedStyle.Render("Type a repository question and press Enter")
+		breadcrumb = uiMutedStyle.Render("Type a repository question and press Enter")
 	}
 	body := queryLine + "\n" + breadcrumb
 	if badge != "" {
-		body = explorerColumns(body, max(10, inner-lipgloss.Width(badge)-1), badge)
+		body = uiColumns(body, max(10, inner-lipgloss.Width(badge)-1), badge)
 	}
-	return explorerPanel(width, explorerHeaderHeight, explorerBlue,
-		explorerTitleStyle.Render("Codebase Context"), "", body)
+	return uiPanel(width, explorerHeaderHeight, uiBlue,
+		uiTitleStyle.Render("Codebase Context"), "", body)
 }
 
 func (model *contextExplorerModel) breadcrumb() string {
@@ -685,10 +660,10 @@ func (model *contextExplorerModel) breadcrumb() string {
 		appendPart(strings.TrimSuffix(model.current.Symbol.Name, "()"))
 	}
 	if len(parts) == 1 {
-		return explorerMutedStyle.Render(parts[0])
+		return uiMutedStyle.Render(parts[0])
 	}
-	prefix := explorerMutedStyle.Render(strings.Join(parts[:len(parts)-1], " › ") + " › ")
-	return prefix + explorerSymbolStyle.Bold(true).Render(parts[len(parts)-1])
+	prefix := uiMutedStyle.Render(strings.Join(parts[:len(parts)-1], " › ") + " › ")
+	return prefix + uiSymbolStyle.Bold(true).Render(parts[len(parts)-1])
 }
 
 func (model *contextExplorerModel) renderExplore(width, height int) string {
@@ -703,20 +678,20 @@ func (model *contextExplorerModel) renderExplore(width, height int) string {
 		row := rows[index]
 		line := ansi.Truncate(row.text, innerWidth, "…")
 		if row.itemIndex >= 0 && row.itemIndex == model.cursor {
-			line = explorerSelectedStyle.Width(innerWidth).Render(line)
+			line = uiSelectedRow(line, innerWidth)
 		}
 		lines = append(lines, line)
 	}
 	if len(model.items) == 0 {
-		lines = append(lines, explorerMutedStyle.Render("No likely context found. Press / to try another query."))
+		lines = append(lines, uiMutedStyle.Render("No likely context found. Press / to try another query."))
 	}
 	for len(lines) < available {
 		lines = append(lines, "")
 	}
 	lines = append(lines, explorerLegend(innerWidth))
-	return explorerPanel(width, height, explorerPaneBorder(model.focus == explorerExplorePane),
+	return uiPanel(width, height, explorerPaneBorder(model.focus == explorerExplorePane),
 		explorerPaneTitle(model.exploreTitle(), model.focus == explorerExplorePane),
-		explorerMutedStyle.Render(model.capabilityLabel()), strings.Join(lines, "\n"))
+		uiMutedStyle.Render(model.capabilityLabel()), strings.Join(lines, "\n"))
 }
 
 func (model *contextExplorerModel) exploreTitle() string {
@@ -754,13 +729,13 @@ func explorerLegend(width int) string {
 	build := func(labels []string) string {
 		chips := make([]string, 0, len(labels))
 		for index, kind := range []string{"file", "function", "variable", "test"} {
-			chips = append(chips, explorerChip(kind)+explorerMutedStyle.Render(" "+labels[index]))
+			chips = append(chips, explorerChip(kind)+uiMutedStyle.Render(" "+labels[index]))
 		}
 		return strings.Join(chips, "  ")
 	}
 	full := build([]string{"file", "function", "variable", "test"})
 	for _, candidate := range []string{
-		explorerMutedStyle.Render("Legend: ") + full,
+		uiMutedStyle.Render("Legend: ") + full,
 		full,
 		build([]string{"file", "func", "var", "test"}),
 	} {
@@ -781,7 +756,7 @@ func (model *contextExplorerModel) exploreRows() []explorerRenderRow {
 			rows = append(rows, explorerRenderRow{itemIndex: -1})
 		}
 		rows = append(rows, explorerRenderRow{
-			text:      explorerMutedStyle.Render("▼ ") + explorerTitleStyle.Render(title) + explorerMutedStyle.Render(fmt.Sprintf(" (%d)", len(indexes))),
+			text:      uiMutedStyle.Render("▼ ") + uiTitleStyle.Render(title) + uiMutedStyle.Render(fmt.Sprintf(" (%d)", len(indexes))),
 			itemIndex: -1,
 		})
 		for position, itemIndex := range indexes {
@@ -791,10 +766,10 @@ func (model *contextExplorerModel) exploreRows() []explorerRenderRow {
 			}
 			item := model.items[itemIndex]
 			rows = append(rows,
-				explorerRenderRow{text: explorerMutedStyle.Render(connector) + item.path, itemIndex: itemIndex},
+				explorerRenderRow{text: uiMutedStyle.Render(connector) + item.path, itemIndex: itemIndex},
 				explorerRenderRow{
-					text: explorerMutedStyle.Render(continuation) + explorerSymbolStyle.Render(item.symbol.Name) +
-						explorerLineStyle.Render(fmt.Sprintf(" :%d", max(1, item.symbol.Line))),
+					text: uiMutedStyle.Render(continuation) + uiSymbolStyle.Render(item.symbol.Name) +
+						uiLineStyle.Render(fmt.Sprintf(" :%d", max(1, item.symbol.Line))),
 					itemIndex: itemIndex,
 				},
 			)
@@ -906,7 +881,7 @@ func (model *contextExplorerModel) renderPreview(width, height int) string {
 	border := explorerPaneBorder(focused)
 	title := model.renderPreviewTitle(innerWidth - 8)
 	if model.preview.err != nil {
-		return explorerPanel(width, height, border, title, "", explorerMutedStyle.Render(model.preview.err.Error()))
+		return uiPanel(width, height, border, title, "", uiMutedStyle.Render(model.preview.err.Error()))
 	}
 	available := max(1, height-3) // one content row is reserved for the status bar
 	start := model.previewTop
@@ -922,15 +897,15 @@ func (model *contextExplorerModel) renderPreview(width, height int) string {
 		marker := " "
 		current := index+1 == model.preview.line
 		if current {
-			marker, number = explorerLineStyle.Render("›"), explorerLineStyle.Render(number)
+			marker, number = uiLineStyle.Render("›"), uiLineStyle.Render(number)
 		} else {
-			number = explorerMutedStyle.Render(number)
+			number = uiMutedStyle.Render(number)
 		}
-		gutter := marker + " " + number + " " + explorerMutedStyle.Render("│") + " "
+		gutter := marker + " " + number + " " + uiMutedStyle.Render("│") + " "
 		codeWidth := max(1, innerWidth-lipgloss.Width(gutter))
 		line := gutter + ansi.Truncate(model.preview.highlighted[index], codeWidth, "…")
 		if current {
-			line = explorerCurrentStyle.Width(innerWidth).Render(line)
+			line = uiCurrentStyle.Width(innerWidth).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -938,21 +913,21 @@ func (model *contextExplorerModel) renderPreview(width, height int) string {
 		lines = append(lines, "")
 	}
 	lines = append(lines, model.renderPreviewStatus(innerWidth, start+1, end))
-	return explorerPanel(width, height, border, title,
-		explorerMutedStyle.Render(fmt.Sprintf("%d:%d", model.preview.line, model.preview.column)),
+	return uiPanel(width, height, border, title,
+		uiMutedStyle.Render(fmt.Sprintf("%d:%d", model.preview.line, model.preview.column)),
 		strings.Join(lines, "\n"))
 }
 
 func (model *contextExplorerModel) renderPreviewTitle(width int) string {
 	title := explorerPaneTitle("Code Preview", model.focus == explorerPreviewPane)
 	if model.preview.path != "" {
-		title += explorerMutedStyle.Render(" · ") + explorerSymbolStyle.Render(model.preview.path)
+		title += uiMutedStyle.Render(" · ") + uiSymbolStyle.Render(model.preview.path)
 	}
 	return ansi.Truncate(title, max(1, width), "…")
 }
 
 func (model *contextExplorerModel) renderPreviewStatus(width, first, last int) string {
-	separator := explorerMutedStyle.Render(" │ ")
+	separator := uiMutedStyle.Render(" │ ")
 	var fields []string
 	if language := previewLanguage(model.preview.path); language != "" {
 		fields = append(fields, language)
@@ -963,11 +938,11 @@ func (model *contextExplorerModel) renderPreviewStatus(width, first, last int) s
 	}
 	fields = append(fields, fmt.Sprintf("Tab Size: %d", explorerTabWidth), eol)
 	for index := range fields {
-		fields[index] = explorerMutedStyle.Render(fields[index])
+		fields[index] = uiMutedStyle.Render(fields[index])
 	}
 	left := strings.Join(fields, separator)
-	right := explorerMutedStyle.Render(fmt.Sprintf("%d-%d of %d", first, last, len(model.preview.highlighted)))
-	return explorerSplit(left, right, width)
+	right := uiMutedStyle.Render(fmt.Sprintf("%d-%d of %d", first, last, len(model.preview.highlighted)))
+	return uiSplit(left, right, width)
 }
 
 func previewLanguage(path string) string {
@@ -994,27 +969,27 @@ func (model *contextExplorerModel) renderSymbolInfo(width, height int) string {
 	inner := max(10, width-4)
 	item, ok := model.selectedItem()
 	if !ok {
-		return explorerPanel(width, height, explorerYellow, explorerTitleStyle.Render("Symbol Info"), "",
-			explorerMutedStyle.Render("No symbol selected"))
+		return uiPanel(width, height, uiYellow, uiTitleStyle.Render("Symbol Info"), "",
+			uiMutedStyle.Render("No symbol selected"))
 	}
 	signature, doc := model.symbolDetail(item)
 	if signature == "" {
 		signature = item.symbol.Name
 	}
 	lines := []string{
-		explorerChip(item.symbol.Kind) + " " + explorerSymbolStyle.Bold(true).Render(signature),
-		explorerMutedStyle.Render("File: ") + fmt.Sprintf("%s:%d", item.path, max(1, item.symbol.Line)),
+		explorerChip(item.symbol.Kind) + " " + uiSymbolStyle.Bold(true).Render(signature),
+		uiMutedStyle.Render("File: ") + fmt.Sprintf("%s:%d", item.path, max(1, item.symbol.Line)),
 	}
 	if doc != "" {
-		lines = append(lines, explorerMutedStyle.Render("Doc: ")+doc)
+		lines = append(lines, uiMutedStyle.Render("Doc: ")+doc)
 	}
 	if model.status != "" {
-		lines = append(lines, explorerLineStyle.Render(model.status))
+		lines = append(lines, uiLineStyle.Render(model.status))
 	}
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], inner, "…")
 	}
-	return explorerPanel(width, height, explorerYellow, explorerTitleStyle.Render("Symbol Info"), "", strings.Join(lines, "\n"))
+	return uiPanel(width, height, uiYellow, uiTitleStyle.Render("Symbol Info"), "", strings.Join(lines, "\n"))
 }
 
 // symbolDetail reads the signature and doc comment straight out of the preview
@@ -1054,34 +1029,26 @@ func isCommentLine(text string) bool {
 
 func (model *contextExplorerModel) renderEvidence(width, height int) string {
 	inner := max(10, width-4)
-	hints := explorerKeyHints([][2]string{{"o", "VS Code"}, {"e", "System Editor"}, {"c", "Copy path:line"}}, "\n")
-	openIn := explorerPanelWith(explorerDashedBorder, lipgloss.Width(hints)+4, explorerInfoHeight-2,
-		explorerBorder, explorerMutedStyle.Render("Open in"), "", hints)
+	hints := uiKeyHints([][2]string{{"o", "VS Code"}, {"e", "System Editor"}, {"c", "Copy path:line"}}, "\n")
+	openIn := uiPanelWith(uiDashedBorder, lipgloss.Width(hints)+4, explorerInfoHeight-2,
+		uiBorder, uiMutedStyle.Render("Open in"), "", hints)
 	if lipgloss.Width(openIn) > inner*2/3 {
 		openIn = ""
 	}
 	var bullets []string
 	if item, ok := model.selectedItem(); ok {
 		for _, reason := range uniqueReasons(item.reasons) {
-			bullets = append(bullets, explorerEvidenceStyle.Render("• ")+reason)
+			bullets = append(bullets, uiEvidenceStyle.Render("• ")+reason)
 		}
 	}
 	if len(bullets) == 0 {
-		bullets = []string{explorerMutedStyle.Render("No evidence recorded")}
+		bullets = []string{uiMutedStyle.Render("No evidence recorded")}
 	}
 	body := strings.Join(bullets, "\n")
 	if openIn != "" {
-		body = explorerColumns(body, max(6, inner-lipgloss.Width(openIn)-1), openIn)
+		body = uiColumns(body, max(6, inner-lipgloss.Width(openIn)-1), openIn)
 	}
-	return explorerPanel(width, height, explorerYellow, explorerTitleStyle.Render("Evidence"), "", body)
-}
-
-func explorerKeyHints(pairs [][2]string, separator string) string {
-	hints := make([]string, 0, len(pairs))
-	for _, pair := range pairs {
-		hints = append(hints, explorerKeyStyle.Render(pair[0])+" "+explorerMutedStyle.Render(pair[1]))
-	}
-	return strings.Join(hints, separator)
+	return uiPanel(width, height, uiYellow, uiTitleStyle.Render("Evidence"), "", body)
 }
 
 func (model *contextExplorerModel) renderFooter(width int) string {
@@ -1107,12 +1074,12 @@ func (model *contextExplorerModel) renderFooter(width int) string {
 			{"tab", "focus"}, {"o", "open"}, {"b", "back"}, {"q", "quit"},
 		}
 	}
-	right := explorerMutedStyle.Render("Press ? for help")
+	right := uiMutedStyle.Render("Press ? for help")
 	if model.help {
-		right = explorerMutedStyle.Render("Press ? to close")
+		right = uiMutedStyle.Render("Press ? to close")
 	}
-	return explorerPanel(width, explorerFooterHeight, explorerBorder, "", "",
-		explorerSplit(explorerKeyHints(hints, "   "), right, inner))
+	return uiPanel(width, explorerFooterHeight, uiBorder, "", "",
+		uiSplit(uiKeyHints(hints, "   "), right, inner))
 }
 
 func defaultPreviewTop(line, total, available int) int {
@@ -1125,16 +1092,16 @@ func defaultPreviewTop(line, total, available int) int {
 
 func explorerPaneTitle(title string, focused bool) string {
 	if focused {
-		return explorerTitleStyle.Render(title)
+		return uiTitleStyle.Render(title)
 	}
-	return explorerMutedStyle.Render(title)
+	return uiMutedStyle.Render(title)
 }
 
 func explorerPaneBorder(focused bool) color.Color {
 	if focused {
-		return explorerBlue
+		return uiBlue
 	}
-	return explorerBorder
+	return uiBorder
 }
 
 func symbolKindLabel(kind string) string {
@@ -1158,74 +1125,9 @@ func explorerChip(kind string) string {
 	label := symbolKindLabel(kind)
 	foreground, ok := explorerChipColors[label]
 	if !ok {
-		foreground = explorerMuted
+		foreground = uiMuted
 	}
-	return lipgloss.NewStyle().Background(explorerSurface).Foreground(foreground).Bold(true).Render(" " + label + " ")
-}
-
-// explorerColumns lays two blocks side by side at a fixed left width. Doing it
-// by hand keeps every row exactly leftWidth+1+rightWidth cells, which is what
-// stops the panel from soft-wrapping a row and shunting the layout down.
-func explorerColumns(left string, leftWidth int, right string) string {
-	leftLines, rightLines := strings.Split(left, "\n"), strings.Split(right, "\n")
-	rows := make([]string, max(len(leftLines), len(rightLines)))
-	for index := range rows {
-		text := ""
-		if index < len(leftLines) {
-			text = ansi.Truncate(leftLines[index], leftWidth, "…")
-		}
-		rows[index] = text + strings.Repeat(" ", max(0, leftWidth-lipgloss.Width(text)))
-		if index < len(rightLines) {
-			rows[index] += " " + rightLines[index]
-		}
-	}
-	return strings.Join(rows, "\n")
-}
-
-// explorerSplit pins right against the far edge of width, left against the near one.
-func explorerSplit(left, right string, width int) string {
-	right = ansi.Truncate(right, max(1, width/2), "…")
-	left = ansi.Truncate(left, max(1, width-lipgloss.Width(right)-1), "…")
-	return left + strings.Repeat(" ", max(1, width-lipgloss.Width(left)-lipgloss.Width(right))) + right
-}
-
-// explorerPanel draws a bordered panel whose title and right-hand label sit in
-// the top border rule, which lipgloss has no primitive for.
-func explorerPanel(width, height int, border color.Color, title, right, body string) string {
-	return explorerPanelWith(lipgloss.RoundedBorder(), width, height, border, title, right, body)
-}
-
-func explorerPanelWith(runes lipgloss.Border, width, height int, border color.Color, title, right, body string) string {
-	rendered := lipgloss.NewStyle().
-		Border(runes).
-		BorderForeground(border).
-		Padding(0, 1).
-		Width(max(1, width)).   // lipgloss counts the border in Width…
-		Height(max(1, height)). // …and in Height, so these are the outer size.
-		MaxWidth(max(1, width)).
-		Render(body)
-	if title == "" && right == "" {
-		return rendered
-	}
-	lines := strings.Split(rendered, "\n")
-	inner := max(2, lipgloss.Width(lines[0])-2)
-	rule := lipgloss.NewStyle().Foreground(border)
-	if title != "" {
-		title = " " + title + " "
-	}
-	if right != "" {
-		right = " " + right + " "
-	}
-	if lipgloss.Width(title)+lipgloss.Width(right)+2 > inner {
-		right = ""
-	}
-	if lipgloss.Width(title)+2 > inner {
-		title = ansi.Truncate(title, max(0, inner-2), "…")
-	}
-	gap := max(0, inner-lipgloss.Width(title)-lipgloss.Width(right)-1)
-	lines[0] = rule.Render(runes.TopLeft+runes.Top) + title +
-		rule.Render(strings.Repeat(runes.Top, gap)) + right + rule.Render(runes.TopRight)
-	return strings.Join(lines, "\n")
+	return uiBadge(label, foreground)
 }
 
 func visibleWindow(cursor, total, available int) int {

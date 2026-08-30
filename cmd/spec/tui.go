@@ -112,7 +112,7 @@ func (model *textPromptModel) View() tea.View {
 	if model.canBack {
 		help += "  Shift+Tab back"
 	}
-	return tea.NewView(fmt.Sprintf("%s\n\n%s\n> %s\n\n%s  Esc save and exit\n", model.title, model.question, model.editor.view(), help))
+	return tea.NewView(fmt.Sprintf("%s\n\n%s\n> %s\n\n%s\n", uiTitleStyle.Render(model.title), model.question, model.editor.view(), uiMutedStyle.Render(help+"  Esc save and exit")))
 }
 
 func runTextPrompt(input io.Reader, output io.Writer, title, question, initial string, optional, canBack bool) (string, bool, bool, error) {
@@ -165,7 +165,7 @@ func (model *choiceModel) View() tea.View {
 	}
 	var builder strings.Builder
 	if model.title != "" {
-		builder.WriteString(model.title)
+		builder.WriteString(uiTitleStyle.Render(model.title))
 		builder.WriteString("\n")
 	}
 	if model.detail != "" {
@@ -177,7 +177,9 @@ func (model *choiceModel) View() tea.View {
 	for index, item := range model.items {
 		fmt.Fprintf(&builder, "%s %s\n", cursor(index == model.cursor), item)
 	}
-	builder.WriteString("\n↑/↓ move  Enter select  Esc exit\n")
+	builder.WriteString("\n")
+	builder.WriteString(uiKeyHints([][2]string{{"↑/↓", "move"}, {"Enter", "select"}, {"Esc", "exit"}}, "  "))
+	builder.WriteByte('\n')
 	return tea.NewView(builder.String())
 }
 
@@ -302,10 +304,11 @@ func (model *setupCriteriaModel) View() tea.View {
 		if model.editing >= 0 {
 			action = "Edit criterion"
 		}
-		return tea.NewView(fmt.Sprintf("%s\n\n> %s\n\nEnter save  Esc cancel\n", action, model.editor.view()))
+		return tea.NewView(fmt.Sprintf("%s\n\n> %s\n\n%s\n", uiTitleStyle.Render(action), model.editor.view(), uiKeyHints([][2]string{{"Enter", "save"}, {"Esc", "cancel"}}, "  ")))
 	}
 	var builder strings.Builder
-	builder.WriteString("Success criteria\n\n")
+	builder.WriteString(uiTitleStyle.Render("Success criteria"))
+	builder.WriteString("\n\n")
 	for index, item := range model.criteria {
 		mark := " "
 		if item.Included {
@@ -317,7 +320,9 @@ func (model *setupCriteriaModel) View() tea.View {
 	fmt.Fprintf(&builder, "%s + Add criterion\n", cursor(model.cursor == add))
 	fmt.Fprintf(&builder, "%s ← Back\n", cursor(model.cursor == add+1))
 	fmt.Fprintf(&builder, "%s ✓ Accept criteria\n", cursor(model.cursor == add+2))
-	builder.WriteString("\n↑/↓ move  Space/Enter select  a add  e edit  d delete  b back  Esc save and exit\n")
+	builder.WriteString("\n")
+	builder.WriteString(uiMutedStyle.Render("↑/↓ move  Space/Enter select  a add  e edit  d delete  b back  Esc save and exit"))
+	builder.WriteByte('\n')
 	return tea.NewView(builder.String())
 }
 
@@ -374,7 +379,8 @@ func (model *reviewCriteriaModel) View() tea.View {
 		return tea.NewView("")
 	}
 	var builder strings.Builder
-	builder.WriteString("Review success criteria\n\n")
+	builder.WriteString(uiTitleStyle.Render("Review success criteria"))
+	builder.WriteString("\n\n")
 	for index, item := range model.criteria {
 		mark := " "
 		if item.Checked {
@@ -387,7 +393,9 @@ func (model *reviewCriteriaModel) View() tea.View {
 		continueLabel = "✓ Continue"
 	}
 	fmt.Fprintf(&builder, "%s %s\n", cursor(model.cursor == len(model.criteria)), continueLabel)
-	builder.WriteString("\n↑/↓ move  Space/Enter review  Esc save and exit\n")
+	builder.WriteString("\n")
+	builder.WriteString(uiMutedStyle.Render("↑/↓ move  Space/Enter review  Esc save and exit"))
+	builder.WriteByte('\n')
 	return tea.NewView(builder.String())
 }
 
@@ -413,7 +421,7 @@ func allCriteriaChecked(criteria []change.Criterion) bool {
 
 func cursor(selected bool) string {
 	if selected {
-		return ">"
+		return uiLineStyle.Render(">")
 	}
 	return " "
 }
