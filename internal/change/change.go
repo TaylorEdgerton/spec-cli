@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
+	"github.com/TaylorEdgerton/spec-cli/internal/evidence"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
+	"github.com/TaylorEdgerton/spec-cli/internal/review"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
-	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
 )
 
 const ActiveFilename = ".spec.md"
@@ -485,21 +486,13 @@ func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) 
 	criteria := AcceptanceCriteria(string(current))
 	reviewedCriteria := 0
 	for _, criterion := range criteria {
-		if !criterion.Checked {
-			return state.History{}, fmt.Errorf("acceptance criteria are not fully reviewed; run `spec done`")
+		if criterion.Checked {
+			reviewedCriteria++
 		}
-		reviewedCriteria++
 	}
 	verification, err := workspace.Verification()
 	if err != nil {
 		return state.History{}, err
-	}
-	currentVerification, err := verifyrun.Current(root, verification)
-	if err != nil {
-		return state.History{}, err
-	}
-	if !currentVerification {
-		return state.History{}, fmt.Errorf("verification is not current and passing; run `spec verify`")
 	}
 	files, err := gitutil.ChangedFiles(root, workspace.BaseSHA)
 	if err != nil {
@@ -525,11 +518,53 @@ func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) 
 		AcceptanceReview:       state.AcceptanceReview{Total: len(criteria), Reviewed: reviewedCriteria},
 		CompletionAcknowledged: true,
 	}
+	record.Stats, record.PlanDrift, record.EvidenceSummary = reviewFacts(root, workspace)
 	record, err = workspace.Finish(record, current, path)
 	if err != nil {
 		return state.History{}, err
 	}
 	return record, nil
+}
+
+func reviewFacts(root string, workspace state.Workspace) (state.ChangeStats, state.PlanDriftSummary, state.EvidenceSummary) {
+	var stats state.ChangeStats
+	var drift state.PlanDriftSummary
+	var summary state.EvidenceSummary
+	plan, _ := workspace.Plan()
+	if changes, err := gitutil.Changes(root, workspace.BaseSHA); err == nil {
+		projection := review.Project(plan, changes, nil)
+		stats = state.ChangeStats{
+			Files: projection.Stats.Files, Additions: projection.Stats.Additions, Deletions: projection.Stats.Deletions,
+		}
+		drift = state.PlanDriftSummary{
+			Matched: projection.Drift.Matched, Additional: projection.Drift.Additional, Untouched: projection.Drift.Untouched,
+		}
+	}
+	runs, err := workspace.EvidenceRuns()
+	if err != nil {
+		return stats, drift, summary
+	}
+	report := evidence.Classify(runs, "")
+	tests := map[string]bool{}
+	for _, item := range report.Items {
+		switch item.Category {
+		case evidence.CategoryExisting:
+			summary.Existing++
+		case evidence.CategoryFailThenPass:
+			summary.FailThenPass++
+		case evidence.CategoryNewTest:
+			summary.NewTests++
+		case evidence.CategoryModifiedExisting:
+			summary.ModifiedExisting++
+		case evidence.CategoryManual:
+			summary.Manual++
+		}
+		if item.Automated {
+			tests[item.ID] = true
+		}
+	}
+	stats.TestsAdded = len(tests)
+	return stats, drift, summary
 }
 
 func withoutActiveSpec(files []string) []string {

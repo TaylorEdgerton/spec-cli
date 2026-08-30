@@ -183,6 +183,65 @@ func TestDoneCapturesHumanContractInHistory(t *testing.T) {
 	}
 }
 
+func TestDoneAcknowledgesCompletionWithoutAutomatedEvidenceOrCheckedCriteria(t *testing.T) {
+	root := committedRepo(t)
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 8, 30, 4, 5, 6, 0, time.UTC)
+	setup, err := BeginSetup(root, "Disable automatic indexing", started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.Outcome = "Manual indexing remains available."
+	setup.Criteria = []state.SetupCriterion{
+		{Text: "Automatic indexing remains enabled by default", Included: true},
+		{Text: "Manual indexing still works", Included: true},
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateSetup(root, setup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("base\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "added.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveVerification(state.Verification{
+		Commands: []string{"go test ./..."}, Passed: false, FailedCommand: "go test ./...",
+		StartedAt: started, FinishedAt: started.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := Done(root, "reviewed by human", started.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("completion was refused despite an explicit acknowledgement: %v", err)
+	}
+	if !record.CompletionAcknowledged {
+		t.Fatal("completion was not recorded as acknowledged")
+	}
+	if record.AcceptanceReview.Total != 2 || record.AcceptanceReview.Reviewed != 0 {
+		t.Fatalf("unreviewed criteria were not archived honestly: %+v", record.AcceptanceReview)
+	}
+	if record.Verification == nil || record.Verification.Passed {
+		t.Fatalf("failing verification was not archived honestly: %+v", record.Verification)
+	}
+	if record.Stats.Files != 2 || record.Stats.Additions != 2 {
+		t.Fatalf("actual stats = %+v", record.Stats)
+	}
+	if record.PlanDrift != (state.PlanDriftSummary{}) {
+		t.Fatalf("plan drift without a plan = %+v", record.PlanDrift)
+	}
+}
+
 func TestNewRefusesExistingSpecFile(t *testing.T) {
 	root := committedRepo(t)
 	if _, err := state.Register(root); err != nil {
