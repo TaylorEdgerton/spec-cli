@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
@@ -24,12 +26,20 @@ type workflowApp struct {
 	context       []discovery.Result
 	promptPending bool
 	reviewed      *reviewSnapshot
+	navOpen       bool
+	navCursor     int
+	quitConfirm   bool
+	quitCursor    int
 }
 
 type workflowNavigateMsg struct{ Action string }
 
 func newWorkflowApp(root string, start shellScreen) *workflowApp {
-	app := &workflowApp{root: root, screen: start, stack: []shellScreen{start}, output: io.Discard}
+	stack := []shellScreen{screenHome}
+	if start != screenHome {
+		stack = append(stack, start)
+	}
+	app := &workflowApp{root: root, screen: start, stack: stack, output: io.Discard}
 	if err := app.load(start, actionNone); err != nil {
 		app.status = err.Error()
 	}
@@ -41,40 +51,83 @@ func (app *workflowApp) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		app.width, app.height = message.Width, message.Height
-		if app.active != nil {
-			updated, _ := app.active.Update(message)
-			app.active = updated
-		}
+		app.resizeActive()
 	case workflowNavigateMsg:
 		return app, app.navigate(message.Action)
-	default:
-		if app.active == nil {
+	case tea.InterruptMsg:
+		app.saveDefinitionDraft()
+		app.done = true
+		return app, tea.Quit
+	case tea.KeyPressMsg:
+		if message.Keystroke() == "ctrl+c" {
+			app.saveDefinitionDraft()
+			app.done = true
+			return app, tea.Quit
+		}
+		if app.quitConfirm {
+			return app, app.updateQuitConfirmation(message.Keystroke())
+		}
+		if app.navOpen {
+			return app, app.updateNavigation(message.Keystroke())
+		}
+		if message.Keystroke() == "g" && app.screen != screenHome {
+			return app, app.navigate(actionHome)
+		}
+		if message.Keystroke() == "n" && app.screen != screenHome {
+			app.openNavigation()
 			return app, nil
 		}
-		updated, cmd := app.active.Update(message)
-		app.active = updated
-		if action := modelNavigation(app.active); action != actionNone {
-			clearModelNavigation(app.active)
-			return app, app.navigate(action)
+		if message.Keystroke() == "q" && app.screen != screenHome {
+			app.quitConfirm, app.quitCursor = true, 0
+			return app, nil
 		}
-		return app, cmd
+		return app, app.updateActive(message)
+	default:
+		return app, app.updateActive(message)
 	}
 	return app, nil
+}
+
+func (app *workflowApp) updateActive(message tea.Msg) tea.Cmd {
+	if app.active == nil {
+		return nil
+	}
+	updated, cmd := app.active.Update(message)
+	app.active = updated
+	if action := modelNavigation(app.active); action != actionNone {
+		clearModelNavigation(app.active)
+		return app.navigate(action)
+	}
+	return cmd
 }
 
 func (app *workflowApp) View() tea.View {
 	if app.done {
 		return tea.NewView("")
 	}
-	if app.active != nil {
-		return app.active.View()
-	}
 	width, height := defaultSize(app.width, app.height)
+	if width < homeMinWidth || height < homeMinHeight {
+		return tea.NewView(uiMinimumSize(width, height))
+	}
+	if app.quitConfirm {
+		return tea.NewView(app.quitConfirmationView(width, height))
+	}
+	if app.navOpen {
+		return tea.NewView(app.navigationOverlay(width, height))
+	}
+	if app.active != nil {
+		content := app.active.View().Content
+		if app.screen == screenHome || width < explorerWideWidth {
+			return tea.NewView(content)
+		}
+		rail := app.navigationRail(24, height)
+		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, rail, content))
+	}
 	body := "Workflow · " + string(app.screen)
 	if app.status != "" {
 		body += "\n\n" + uiMutedStyle.Render(app.status)
 	}
-	return tea.NewView(uiAppShell(width, height, "Spec", body, "q exit"))
+	return tea.NewView(uiAppShell(width, height, "Spec", body, "b back   g home"))
 }
 
 func runWorkflowApp(root string, start shellScreen, input io.Reader, output io.Writer) (bool, error) {
@@ -89,9 +142,86 @@ func runWorkflowApp(root string, start shellScreen, input io.Reader, output io.W
 
 func (app *workflowApp) navigate(action string) tea.Cmd {
 	if action == actionQuit {
+		if app.screen != screenHome {
+			app.quitConfirm, app.quitCursor = true, 0
+			return nil
+		}
 		app.saveDefinitionDraft()
 		app.done = true
 		return tea.Quit
+	}
+	if action == actionHome {
+		app.saveDefinitionDraft()
+		app.stack = []shellScreen{screenHome}
+		app.reviewed = nil
+		if err := app.load(screenHome, actionHome); err != nil {
+			app.status = err.Error()
+		}
+		return nil
+	}
+	if action == actionInitialize {
+		var result bytes.Buffer
+		if err := runInit(&result); err != nil {
+			app.setActiveStatus(err.Error())
+			return nil
+		}
+		root, err := currentRoot()
+		if err != nil {
+			app.setActiveStatus(err.Error())
+			return nil
+		}
+		app.root = root
+		command := app.navigate(actionHome)
+		app.setActiveStatus(firstOutputLine(result.String(), "Workspace initialized."))
+		return command
+	}
+	if action == actionNew {
+		if _, err := change.BeginSetup(app.root, "", time.Now()); err != nil {
+			app.setActiveStatus(err.Error())
+			return nil
+		}
+		action = actionDefinition
+	}
+	if action == actionResume {
+		workspace, err := state.Load(app.root)
+		if err != nil {
+			app.setActiveStatus(err.Error())
+			return nil
+		}
+		if !workspace.Active {
+			return app.navigate(actionNew)
+		}
+		if workspace.Setup != nil {
+			action = actionDefinition
+		} else {
+			action = actionOverview
+		}
+	}
+	if action == actionRecent {
+		action = actionHistory
+	}
+	if action == actionREADME {
+		var result bytes.Buffer
+		if err := runREADME(nil, &result); err != nil {
+			app.setActiveStatus(err.Error())
+		} else {
+			app.setActiveStatus(firstOutputLine(result.String(), "README action completed."))
+		}
+		return nil
+	}
+	if action == actionRunbook {
+		documents, ok := app.active.(*documentModel)
+		if !ok || documents.runbookTitle() == "" {
+			return nil
+		}
+		var result bytes.Buffer
+		if err := runRunbook(app.root, []string{documents.runbookTitle()}, &result); err != nil {
+			documents.status = err.Error()
+		} else {
+			documents.status = firstOutputLine(result.String(), "Runbook action completed.")
+			documents.editing, documents.editor = false, lineEditor{}
+		}
+		return nil
 	}
 	if action == actionChanges {
 		app.stack = []shellScreen{screenOverview}
@@ -108,8 +238,8 @@ func (app *workflowApp) navigate(action string) tea.Cmd {
 			app.stack = app.stack[:len(app.stack)-1]
 			_ = app.load(app.stack[len(app.stack)-1], actionBack)
 		} else {
-			app.done = true
-			return tea.Quit
+			app.stack = []shellScreen{screenHome}
+			_ = app.load(screenHome, actionBack)
 		}
 		return nil
 	}
@@ -151,7 +281,7 @@ func (app *workflowApp) navigate(action string) tea.Cmd {
 			app.status = err.Error()
 			return nil
 		}
-		app.stack = nil
+		app.stack = []shellScreen{screenHome}
 		action = actionHistory
 	}
 	target := screenForAction(action)
@@ -180,6 +310,8 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 	app.screen, app.status = target, ""
 	var model tea.Model
 	switch target {
+	case screenHome:
+		model = newHomeModel(loadHomeData(app.root, time.Now()))
 	case screenOverview:
 		data, err := loadOverview(app.root, time.Now())
 		if err != nil {
@@ -231,6 +363,10 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 			return err
 		}
 		model = newHistoryModel(dir, records, false)
+	case screenExplore:
+		model = newContextExplorer(app.root, "", nil)
+	case screenDocuments:
+		model = newDocumentModel()
 	case screenDefinition:
 		workspace, err := state.Load(app.root)
 		if err != nil {
@@ -263,11 +399,20 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 		return fmt.Errorf("workflow screen %q is unavailable", target)
 	}
 	app.active = model
-	if app.width > 0 || app.height > 0 {
-		updated, _ := app.active.Update(tea.WindowSizeMsg{Width: app.width, Height: app.height})
-		app.active = updated
-	}
+	app.resizeActive()
 	return nil
+}
+
+func (app *workflowApp) resizeActive() {
+	if app.active == nil || (app.width <= 0 && app.height <= 0) {
+		return
+	}
+	width := app.width
+	if app.screen != screenHome && width >= explorerWideWidth {
+		width -= 24
+	}
+	updated, _ := app.active.Update(tea.WindowSizeMsg{Width: width, Height: app.height})
+	app.active = updated
 }
 
 func (app *workflowApp) saveDefinitionDraft() {
@@ -305,6 +450,8 @@ func recordDiscoveredContext(root string, count int) {
 
 func modelNavigation(model tea.Model) string {
 	switch model := model.(type) {
+	case *homeModel:
+		return model.nav
 	case *definitionModel:
 		return model.nav
 	case *overviewModel:
@@ -318,6 +465,10 @@ func modelNavigation(model tea.Model) string {
 	case *contextReviewModel:
 		return model.nav
 	case *planCaptureModel:
+		return model.nav
+	case *contextExplorerModel:
+		return model.nav
+	case *documentModel:
 		return model.nav
 	}
 	return actionNone
@@ -325,6 +476,8 @@ func modelNavigation(model tea.Model) string {
 
 func clearModelNavigation(model tea.Model) {
 	switch model := model.(type) {
+	case *homeModel:
+		model.nav = actionNone
 	case *definitionModel:
 		model.nav = actionNone
 	case *overviewModel:
@@ -339,5 +492,161 @@ func clearModelNavigation(model tea.Model) {
 		model.nav = actionNone
 	case *planCaptureModel:
 		model.nav = actionNone
+	case *contextExplorerModel:
+		model.nav = actionNone
+	case *documentModel:
+		model.nav = actionNone
 	}
+}
+
+func (app *workflowApp) setActiveStatus(status string) {
+	app.status = status
+	switch model := app.active.(type) {
+	case *homeModel:
+		model.status = status
+	case *documentModel:
+		model.status = status
+	}
+}
+
+func firstOutputLine(output, fallback string) string {
+	line := strings.TrimSpace(output)
+	if index := strings.IndexByte(line, '\n'); index >= 0 {
+		line = line[:index]
+	}
+	if line == "" {
+		return fallback
+	}
+	return line
+}
+
+func (app *workflowApp) navigationScreen() canonicalScreen {
+	var changeItems []screenItem
+	if app.root != "" {
+		if workspace, err := state.Load(app.root); err == nil && workspace.Active {
+			facts := overviewFacts{SetupActive: workspace.Setup != nil, BaselineReady: workspace.BaseSHA != ""}
+			if stored, _ := workspace.Plan(); stored != nil {
+				facts.PlanAvailable = true
+			}
+			for _, stage := range deriveOverviewStages(facts) {
+				marker := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○", stageOmitted: "–"}[stage.Status]
+				action := actionOverview
+				switch stage.ID {
+				case "intent":
+					action = actionDefinition
+				case "plan":
+					if facts.PlanAvailable {
+						action = actionPlan
+					} else {
+						action = actionPlanCapture
+					}
+				case "review":
+					action = actionReview
+				case "evidence":
+					action = actionEvidence
+				case "complete":
+					action = actionHistory
+				}
+				changeItems = append(changeItems, screenItem{ID: "navigation." + stage.ID, Label: marker + " " + stage.Label, Selectable: true, Action: screenAction(action)})
+			}
+		}
+	}
+	return canonicalScreen{Sections: []screenSection{
+		{ID: "navigation.change", Title: "CHANGE", Items: changeItems, EmptyReason: "No active change"},
+		{ID: "navigation.review", Title: "REVIEW", Items: []screenItem{
+			{ID: "navigation.summary", Label: "Summary", Selectable: true, Action: screenAction(actionSummary)},
+			{ID: "navigation.changes", Label: "Changes", Selectable: true, Action: screenAction(actionReview)},
+		}},
+		{ID: "navigation.global", Items: []screenItem{
+			{ID: "navigation.explore", Label: "Explore", Selectable: true, Action: screenAction(actionExplore)},
+			{ID: "navigation.history", Label: "History", Selectable: true, Action: screenAction(actionHistory)},
+			{ID: "navigation.home", Label: "Home", Selectable: true, Action: screenAction(actionHome)},
+		}},
+	}, Cursor: app.navCursor}
+}
+
+func (app *workflowApp) openNavigation() {
+	app.navOpen = true
+	app.navCursor = 0
+	items := app.navigationScreen().selectableItems()
+	wanted := map[shellScreen]string{screenHome: "navigation.home", screenExplore: "navigation.explore", screenHistory: "navigation.history"}[app.screen]
+	for index, item := range items {
+		if item.ID == wanted {
+			app.navCursor = index
+			break
+		}
+	}
+}
+
+func (app *workflowApp) updateNavigation(keystroke string) tea.Cmd {
+	screen := app.navigationScreen()
+	switch keystroke {
+	case "up", "k":
+		screen.move(-1)
+		app.navCursor = screen.Cursor
+	case "down", "j":
+		screen.move(1)
+		app.navCursor = screen.Cursor
+	case "enter":
+		app.navOpen = false
+		return app.navigate(string(screen.activate()))
+	case "esc", "b", "n":
+		app.navOpen = false
+	case "g":
+		app.navOpen = false
+		return app.navigate(actionHome)
+	}
+	return nil
+}
+
+func (app *workflowApp) navigationOverlay(width, height int) string {
+	screen := app.navigationScreen()
+	screen.Cursor = app.navCursor
+	return uiAppShell(width, height, "Navigate", screen.body(), uiKeyHints([][2]string{{"↑/↓", "navigate"}, {"enter", "open"}, {"esc", "close"}, {"g", "home"}}, "    "))
+}
+
+func (app *workflowApp) navigationRail(width, height int) string {
+	screen := app.navigationScreen()
+	lines := []string{uiTitleStyle.Render("SPEC"), ""}
+	for _, section := range screen.Sections {
+		if section.Title != "" {
+			lines = append(lines, uiMutedStyle.Render(section.Title))
+		}
+		if len(section.Items) == 0 {
+			lines = append(lines, "  "+uiMutedStyle.Render(section.EmptyReason))
+		}
+		for _, item := range section.Items {
+			lines = append(lines, "  "+item.Label)
+		}
+		lines = append(lines, "")
+	}
+	return uiPanel(width, height, uiBorder, "", "", strings.Join(lines, "\n"))
+}
+
+func (app *workflowApp) updateQuitConfirmation(keystroke string) tea.Cmd {
+	switch keystroke {
+	case "left", "right", "up", "down", "j", "k", "tab", "shift+tab":
+		app.quitCursor = wrap(app.quitCursor+1, 2)
+	case "esc", "b", "q":
+		app.quitConfirm, app.quitCursor = false, 0
+	case "enter":
+		if app.quitCursor == 1 {
+			app.saveDefinitionDraft()
+			app.done = true
+			return tea.Quit
+		}
+		app.quitConfirm = false
+	}
+	return nil
+}
+
+func (app *workflowApp) quitConfirmationView(width, height int) string {
+	stay, exitLabel := "[ Stay ]", "  Exit  "
+	if app.quitCursor == 0 {
+		stay = uiSelectedRow("> Stay", 0)
+	} else {
+		exitLabel = uiSelectedRow("> Exit", 0)
+	}
+	body := strings.Join([]string{uiTitleStyle.Render("Exit Spec?"), "", "Your workflow state is preserved, but q only exits directly from Home.", "", stay + "    " + exitLabel}, "\n")
+	return uiAppShell(width, height, "Confirm exit", body, uiKeyHints([][2]string{{"←/→", "choose"}, {"enter", "confirm"}, {"esc", "stay"}}, "    "))
 }

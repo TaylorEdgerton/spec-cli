@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -145,9 +146,133 @@ func TestPersistentWorkflowRootTransitionsWithoutQuittingTeaProgram(t *testing.T
 	if app.screen != shellScreen(actionPlanCapture) || app.done {
 		t.Fatalf("plan capture transition = screen:%q done:%v", app.screen, app.done)
 	}
-	app.Update(workflowNavigateMsg{Action: actionQuit})
+	app.Update(key('q', "q"))
+	if app.done || !app.quitConfirm || app.quitCursor != 0 {
+		t.Fatal("q outside Home did not open a safe confirmation")
+	}
+	app.Update(key(tea.KeyEnter, ""))
+	if app.done || app.quitConfirm {
+		t.Fatal("default quit confirmation did not stay in Spec")
+	}
+}
+
+func TestRootNavigationBackHomeQuitAndEmergencyExitContract(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	before, err := os.ReadFile(filepath.Join(workspace.Dir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, screenOverview)
+	app.Update(key(tea.KeyEsc, ""))
+	if app.done || app.screen != screenHome {
+		t.Fatalf("back from root child = screen:%q done:%v", app.screen, app.done)
+	}
+	app.Update(key(tea.KeyDown, ""))
+	afterCursor, err := os.ReadFile(filepath.Join(workspace.Dir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterCursor) {
+		t.Fatal("Home cursor movement mutated persisted workflow state")
+	}
+	app.Update(key(tea.KeyEsc, ""))
+	if app.done || app.screen != screenHome {
+		t.Fatalf("back from Home = screen:%q done:%v", app.screen, app.done)
+	}
+
+	app.Update(workflowNavigateMsg{Action: actionResume})
+	if app.screen == screenHome {
+		t.Fatal("Resume did not leave Home")
+	}
+	app.Update(key('g', "g"))
+	after, err := os.ReadFile(filepath.Join(workspace.Dir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.screen != screenHome || !bytes.Equal(before, after) {
+		t.Fatalf("g Home mutated workflow state or missed Home: screen=%q", app.screen)
+	}
+
+	app.Update(key('q', "q"))
 	if !app.done {
-		t.Fatal("quit did not end the root app")
+		t.Fatal("q from Home did not exit")
+	}
+
+	emergency := newWorkflowApp(root, screenHome)
+	emergency.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl}))
+	if !emergency.done {
+		t.Fatal("Ctrl+C did not emergency-exit")
+	}
+}
+
+func TestRootHomeDestinationsStayInsideOneApplication(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	for action, want := range map[string]shellScreen{
+		actionResume:    screenDefinition,
+		actionExplore:   screenExplore,
+		actionRecent:    screenHistory,
+		actionDocuments: screenDocuments,
+	} {
+		app := newWorkflowApp(root, screenHome)
+		app.Update(workflowNavigateMsg{Action: action})
+		if app.done || app.screen != want || app.active == nil {
+			t.Fatalf("%s = screen:%q active:%T done:%v, want %q", action, app.screen, app.active, app.done, want)
+		}
+		app.Update(workflowNavigateMsg{Action: actionBack})
+		if app.done || app.screen != screenHome {
+			t.Fatalf("%s back = screen:%q done:%v", action, app.screen, app.done)
+		}
+	}
+}
+
+func TestIdleHomeStartsDefinitionInsideRootAndBackReturnsHome(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	if err := workspace.Abandon(); err != nil {
+		t.Fatal(err)
+	}
+	app := newWorkflowApp(root, screenHome)
+	app.Update(workflowNavigateMsg{Action: actionNew})
+	if app.done || app.screen != screenDefinition {
+		t.Fatalf("new change = screen:%q done:%v", app.screen, app.done)
+	}
+	loaded, err := state.Load(root)
+	if err != nil || !loaded.Active || loaded.Setup == nil {
+		t.Fatalf("new change setup = %+v, %v", loaded.Metadata, err)
+	}
+	app.Update(workflowNavigateMsg{Action: actionBack})
+	if app.done || app.screen != screenHome {
+		t.Fatalf("new change back = screen:%q done:%v", app.screen, app.done)
+	}
+}
+
+func TestRootResponsiveNavigationRailOverlayAndMinimumSize(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	wide := newWorkflowApp(root, screenOverview)
+	wide.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	wideView := wide.View().Content
+	widePlain := ansi.Strip(wideView)
+	for _, expected := range []string{"CHANGE", "Intent & Scope", "REVIEW", "Explore", "History", "Home"} {
+		if !strings.Contains(widePlain, expected) {
+			t.Fatalf("wide navigation missing %q:\n%s", expected, widePlain)
+		}
+	}
+	if lipgloss.Width(wideView) > 120 || lipgloss.Height(wideView) > 34 {
+		t.Fatalf("wide root bounds = %dx%d", lipgloss.Width(wideView), lipgloss.Height(wideView))
+	}
+
+	narrow := newWorkflowApp(root, screenOverview)
+	narrow.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	narrow.Update(key('n', "n"))
+	narrowPlain := ansi.Strip(narrow.View().Content)
+	if !strings.Contains(narrowPlain, "Navigate") || !strings.Contains(narrowPlain, "Home") {
+		t.Fatalf("narrow navigation overlay missing:\n%s", narrowPlain)
+	}
+
+	small := newWorkflowApp(root, screenOverview)
+	small.Update(tea.WindowSizeMsg{Width: 50, Height: 12})
+	if plain := ansi.Strip(small.View().Content); !strings.Contains(plain, "Terminal is too small") {
+		t.Fatalf("small terminal state missing:\n%s", plain)
 	}
 }
 
