@@ -145,7 +145,7 @@ func (m *overviewModel) key(keystroke string) tea.Cmd {
 	case "b", "esc":
 		m.leave(actionBack)
 		return tea.Quit
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		m.leave(actionQuit)
 		return tea.Quit
 	}
@@ -186,7 +186,7 @@ func (m *overviewModel) copySelectedPrompt() {
 
 func (m *overviewModel) hints() [][2]string {
 	return [][2]string{{"enter", "open stage"}, {"p", "prompt"}, {"r", "review"},
-		{"h", "history"}, {"?", "help"}, {"b", "back"}, {"q", "exit"}}
+		{"h", "history"}, {"?", "help"}, {"b", "back"}, {"g", "home"}}
 }
 func (m *overviewModel) View() tea.View {
 	if m.done {

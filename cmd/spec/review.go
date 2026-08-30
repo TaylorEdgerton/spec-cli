@@ -197,7 +197,7 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 	case "b", "esc":
 		m.leave(actionBack)
 		return tea.Quit
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		m.leave(actionQuit)
 		return tea.Quit
 	}
@@ -469,7 +469,7 @@ func (m *reviewModel) hints() [][2]string {
 	case tabStats:
 		hints = append(hints, [2]string{"d", "diff"}, [2]string{"i", "integration"}, [2]string{"e", "evidence"})
 	}
-	return append(hints, [2]string{"r", "refresh"}, [2]string{"?", "help"}, [2]string{"b", "back"}, [2]string{"q", "exit"})
+	return append(hints, [2]string{"r", "refresh"}, [2]string{"?", "help"}, [2]string{"b", "back"}, [2]string{"g", "home"})
 }
 
 func (m *reviewModel) tabBody(width int) []string {

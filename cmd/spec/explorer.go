@@ -122,6 +122,7 @@ type contextExplorerModel struct {
 	focus      explorerPane
 	precision  discovery.PrecisionAvailability
 	help       bool
+	nav        string
 	done       bool
 	stopped    bool
 	find       func(string, string) ([]discovery.Result, error)
@@ -183,11 +184,11 @@ func (model *contextExplorerModel) Update(message tea.Msg) (tea.Model, tea.Cmd) 
 func (model *contextExplorerModel) updateQuery(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch message.Keystroke() {
 	case "ctrl+c":
-		model.done, model.stopped = true, true
+		model.done, model.stopped, model.nav = true, true, actionQuit
 		return model, tea.Quit
 	case "esc":
 		if len(model.results) == 0 {
-			model.done, model.stopped = true, true
+			model.done, model.nav = true, actionBack
 			return model, tea.Quit
 		}
 		model.querying = false
@@ -212,11 +213,11 @@ func (model *contextExplorerModel) updateQuery(message tea.KeyPressMsg) (tea.Mod
 
 func (model *contextExplorerModel) updateBrowse(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch message.Keystroke() {
-	case "ctrl+c", "esc":
-		model.done, model.stopped = true, true
+	case "ctrl+c":
+		model.done, model.stopped, model.nav = true, true, actionQuit
 		return model, tea.Quit
-	case "q":
-		model.done = true
+	case "esc":
+		model.done, model.nav = true, actionBack
 		return model, tea.Quit
 	case "/":
 		model.querying = true
@@ -260,7 +261,7 @@ func (model *contextExplorerModel) updateBrowse(message tea.KeyPressMsg) (tea.Mo
 		model.drill()
 	case "b", "backspace":
 		if len(model.history) == 0 {
-			model.done = true
+			model.done, model.nav = true, actionBack
 			return model, tea.Quit
 		}
 		model.current = model.history[len(model.history)-1]
@@ -1055,23 +1056,23 @@ func (model *contextExplorerModel) renderFooter(width int) string {
 	inner := max(10, width-4)
 	hints := [][2]string{
 		{"↑/↓", "navigate"}, {"enter", "explore"}, {"tab", "focus"},
-		{"o", "open"}, {"/", "new query"}, {"b", "back"}, {"q", "quit"},
+		{"o", "open"}, {"/", "new query"}, {"b", "back"}, {"g", "home"},
 	}
 	switch {
 	case model.querying:
-		hints = [][2]string{{"enter", "search"}, {"esc", "cancel"}, {"ctrl+c", "exit"}}
+		hints = [][2]string{{"enter", "search"}, {"esc", "cancel"}, {"g", "home"}}
 		if len(model.results) == 0 {
-			hints = [][2]string{{"enter", "search"}, {"esc", "exit"}, {"ctrl+c", "exit"}}
+			hints = [][2]string{{"enter", "search"}, {"esc", "back"}, {"g", "home"}}
 		}
 	case model.help:
 		hints = [][2]string{
 			{"↑/↓", "navigate"}, {"enter", "explore"}, {"tab", "focus"}, {"o", "VS Code"},
-			{"e", "system editor"}, {"c", "copy path:line"}, {"/", "new query"}, {"b", "back"}, {"q", "quit"},
+			{"e", "system editor"}, {"c", "copy path:line"}, {"/", "new query"}, {"b", "back"}, {"g", "home"},
 		}
 	case model.focus == explorerPreviewPane:
 		hints = [][2]string{
 			{"↑/↓", "scroll"}, {"PgUp/PgDn", "page"}, {"home/end", "jump"},
-			{"tab", "focus"}, {"o", "open"}, {"b", "back"}, {"q", "quit"},
+			{"tab", "focus"}, {"o", "open"}, {"b", "back"}, {"g", "home"},
 		}
 	}
 	right := uiMutedStyle.Render("Press ? for help")
