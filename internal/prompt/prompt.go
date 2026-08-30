@@ -89,7 +89,7 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("Discovery context below is advisory and may be absent.\n")
-	builder.WriteString("Optionally return one fenced `spec-plan` JSON block using this provider-neutral schema:\n\n")
+	builder.WriteString("Plan the change and return one fenced `spec-plan` JSON block using this provider-neutral schema:\n\n")
 	builder.WriteString("```spec-plan\n")
 	builder.WriteString("{\n")
 	builder.WriteString("  \"summary\": \"short implementation summary\",\n")
@@ -99,7 +99,7 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 	builder.WriteString("  \"uncertainties\": [\"open question\"]\n")
 	builder.WriteString("}\n")
 	builder.WriteString("```\n\n")
-	builder.WriteString("Allowed file actions are `create`, `modify`, and `delete`. The plan is optional; continue implementation if you do not provide it.\n\n")
+	builder.WriteString("Allowed file actions are `create`, `modify`, and `delete`. The plan is required by default; continue implementation if prompted not to plan.\n\n")
 	info := Info{}
 	files := promptFiles(root, current)
 
