@@ -458,6 +458,11 @@ func rankedResult(file fileEvidence, signals []signal, scored []scoredMatch) (Re
 		}
 	}
 	result.intentTerms = len(intentTerms)
+	// Repeated exact intent terms in the package directory and filename are a
+	// strong repository-specific signal. Keep this independent of corpus IDF so
+	// a generic UI phrase cannot outrank the implementation package merely
+	// because the domain term appears frequently across that package.
+	result.score += exactIntentPathBonus(result.Path, intentTerms)
 	if result.Preview == "" {
 		for _, evidence := range scored {
 			if evidence.preview != "" {
@@ -471,6 +476,19 @@ func rankedResult(file fileEvidence, signals []signal, scored []scoredMatch) (Re
 	confident := result.strongMatch || result.intentTerms >= 2 ||
 		(result.pathScore > 0 && likelyCodeFile(result.Path))
 	return result, confident
+}
+
+func exactIntentPathBonus(path string, intentTerms map[string]bool) float64 {
+	matches := 0
+	for _, token := range significantTokens(filepath.ToSlash(path)) {
+		if intentTerms[token.term] {
+			matches++
+		}
+	}
+	if matches < 2 {
+		return 0
+	}
+	return float64(matches) * 110
 }
 
 func containsSymbolMatch(matches []symbolMatch, candidate symbolMatch) bool {
