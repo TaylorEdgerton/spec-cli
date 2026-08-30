@@ -20,6 +20,7 @@ var commands = []command{
 	{"configure", "open global configuration and templates", cmdConfigure},
 	{"new", "start or resume a change specification", cmdNew},
 	{"prompt", "create a provider-neutral engineering prompt", cmdPrompt},
+	{"plan", "submit an optional implementation plan", cmdPlan},
 	{"verify", "run deterministic project checks", cmdVerify},
 	{"done", "finish the active change", cmdDone},
 	{"adr", "create an architecture decision record", cmdADR},
