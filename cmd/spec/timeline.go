@@ -92,10 +92,30 @@ func timelineLines(entries []timelineEntry) []string {
 		if entry.Derived {
 			detail = strings.TrimSpace(detail + " " + uiMutedStyle.Render("(derived from the stored record)"))
 		}
-		lines = append(lines, fmt.Sprintf("  %-17s %-24s %-14s %s",
-			stamp, entry.Type, actorSource(entry), detail))
+		lines = append(lines, fmt.Sprintf("  %-17s %-34s %-14s %s",
+			stamp, timelineLabel(entry.Type), actorSource(entry), detail))
 	}
 	return lines
+}
+
+func timelineLabel(kind string) string {
+	labels := map[string]string{
+		string(state.TimelineSpecCreated):        "Spec created",
+		string(state.TimelineBaselineCaptured):   "Baseline captured",
+		string(state.TimelineDiscoveryRefreshed): "Discovery refreshed",
+		string(state.TimelinePromptCopied):       "Prompt copied",
+		string(state.TimelinePromptPrinted):      "Prompt printed",
+		string(state.TimelinePlanAccepted):       "Plan accepted",
+		string(state.TimelineActualRefreshed):    "Actual state refreshed",
+		string(state.TimelineEvidenceRecorded):   "Evidence recorded",
+		string(state.TimelineReviewDecision):     "Review decision",
+		string(state.TimelineChangesRequested):   "Changes requested",
+		string(state.TimelineSpecCompleted):      "Spec completed",
+	}
+	if label, ok := labels[kind]; ok {
+		return label + " (" + kind + ")"
+	}
+	return kind
 }
 
 func actorSource(entry timelineEntry) string {
