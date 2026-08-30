@@ -58,7 +58,9 @@ func (model *contextReviewModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.viewport += max(1, model.height/2)
 		case "enter":
 			model.nav = string(model.screen().activate())
-		case "q", "ctrl+c":
+		case "b", "esc":
+			model.nav = actionBack
+		case "ctrl+c":
 			model.nav = actionQuit
 		}
 	}
@@ -88,7 +90,7 @@ func (model *contextReviewModel) View() tea.View {
 		}
 		lines = append(lines, row)
 	}
-	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "action"}, {"q", "exit"}}, "  ")
+	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "action"}, {"b", "back"}, {"g", "home"}}, "  ")
 	body, next := uiViewportBody(strings.Join(lines, "\n"), uiWorkflowBodyHeight(height, "Implementation context"), model.viewport, model.screen().selectedItemLabel())
 	model.viewport = next
 	return tea.NewView(uiAppShell(width, height, "Implementation context", body, footer))
