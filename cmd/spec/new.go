@@ -434,6 +434,7 @@ func offerImplementationPrompt(root string, input io.Reader, output io.Writer) e
 
 func reviewDiscovery(root string, setup state.Setup, input io.Reader, output io.Writer) (bool, bool, error) {
 	results, discoveryErr := discovery.Find(root, discoveryQuery(setup))
+	showContext := true
 	for {
 		detail := formatDiscovery(results)
 		if discoveryErr != nil {
@@ -446,14 +447,17 @@ func reviewDiscovery(root string, setup state.Setup, input io.Reader, output io.
 		}
 		items = append(items, "Continue", "Refresh", "Back to success criteria")
 		actions = append(actions, "continue", "refresh", "back")
-		printConsoleSection(output, "Change Context", detail)
+		if showContext {
+			printConsoleSection(output, "Change Context", detail)
+			showContext = false
+		}
 		choice, stopped, err := runChoice(input, output, "", "", items)
 		if err != nil || stopped {
 			return false, stopped, err
 		}
 		switch actions[choice] {
 		case "explore":
-			if err := exploreDiscoveryContext(root, results, input, output); err != nil {
+			if err := exploreDiscoveryContext(root, setup.Title, results, input, output); err != nil {
 				fmt.Fprintf(output, "Could not explore context: %v\n", err)
 			}
 		case "continue":
@@ -462,6 +466,7 @@ func reviewDiscovery(root string, setup state.Setup, input io.Reader, output io.
 			return true, false, nil
 		case "refresh":
 			results, discoveryErr = discovery.Find(root, discoveryQuery(setup))
+			showContext = true
 		}
 	}
 }
@@ -476,131 +481,9 @@ func discoveryQuery(setup state.Setup) discovery.Query {
 	return query
 }
 
-type exploredSymbol struct {
-	Path   string
-	Symbol discovery.Symbol
-}
-
-func exploreDiscoveryContext(root string, results []discovery.Result, input io.Reader, output io.Writer) error {
-	current, ok := defaultExploredSymbol(results)
-	if !ok {
-		return chooseSearchResult(root, results, input, output)
-	}
-	var history []exploredSymbol
-	for {
-		printConsoleSection(output, "Explore Context", formatExploreTree(current))
-		items := exploreChoices(current)
-		choice, stopped, err := runChoice(input, output, "", "", items)
-		if err != nil || stopped {
-			return err
-		}
-		switch {
-		case choice == 0:
-			return openInVSCode(root, discovery.Result{
-				Path: current.Path, Line: current.Symbol.Line, Column: current.Symbol.Column,
-			})
-		case choice <= len(current.Symbol.Related):
-			related := current.Symbol.Related[choice-1]
-			path := related.Path
-			if path == "" {
-				path = current.Path
-			}
-			next, exploreErr := discovery.Explore(root, path, related.Line, related.Column)
-			if exploreErr != nil {
-				next = discovery.Symbol{
-					Name: related.Name, Kind: related.Kind, Line: related.Line, Column: related.Column,
-				}
-			}
-			history = append(history, current)
-			current = exploredSymbol{Path: path, Symbol: next}
-		default:
-			if len(history) == 0 {
-				return nil
-			}
-			current = history[len(history)-1]
-			history = history[:len(history)-1]
-		}
-	}
-}
-
-func defaultExploredSymbol(results []discovery.Result) (exploredSymbol, bool) {
-	for _, result := range results {
-		if len(result.Symbols) > 0 {
-			return exploredSymbol{Path: result.Path, Symbol: result.Symbols[0]}, true
-		}
-	}
-	return exploredSymbol{}, false
-}
-
-func formatExploreTree(current exploredSymbol) string {
-	var builder strings.Builder
-	location := discovery.Result{Path: current.Path, Line: current.Symbol.Line, Column: current.Symbol.Column}
-	fmt.Fprintf(&builder, "%s\n\n%s", styledDiscoveryLocation(location), current.Symbol.Name)
-	for index, related := range current.Symbol.Related {
-		connector := "├─"
-		if index == len(current.Symbol.Related)-1 {
-			connector = "└─"
-		}
-		fmt.Fprintf(&builder, "\n%s %s", connector, related.Relation)
-	}
-	return builder.String()
-}
-
-func exploreChoices(current exploredSymbol) []string {
-	items := []string{fmt.Sprintf("%s :%d", current.Symbol.Name, current.Symbol.Line)}
-	for _, related := range current.Symbol.Related {
-		items = append(items, fmt.Sprintf("%s :%d", related.Name, related.Line))
-	}
-	return append(items, "Back")
-}
-
-func chooseSearchResult(root string, results []discovery.Result, input io.Reader, output io.Writer) error {
-	choices := discoveryOpenChoices(results)
-	items := make([]string, 0, len(choices)+1)
-	for _, choice := range choices {
-		items = append(items, choice.Label)
-	}
-	items = append(items, "Back")
-	printConsoleSection(output, "Explore Context", "Tree-sitter context is unavailable. Choose a search result to open in VS Code.")
-	choice, stopped, err := runChoice(input, output, "", "", items)
-	if err != nil || stopped {
-		return err
-	}
-	if choice == len(choices) {
-		return nil
-	}
-	return openInVSCode(root, choices[choice].Result)
-}
-
-type discoveryOpenChoice struct {
-	Label  string
-	Result discovery.Result
-}
-
-func discoveryOpenChoices(results []discovery.Result) []discoveryOpenChoice {
-	var choices []discoveryOpenChoice
-	for _, result := range results {
-		if len(result.Symbols) == 0 {
-			detail := result.Preview
-			if detail == "" && len(result.Reasons) > 0 {
-				detail = result.Reasons[0]
-			}
-			choices = append(choices, discoveryOpenChoice{
-				Label:  fmt.Sprintf("%s — %s", styledDiscoveryLocation(result), boundedSummary(detail)),
-				Result: result,
-			})
-			continue
-		}
-		for _, symbol := range result.Symbols {
-			target := result
-			target.Line, target.Column = symbol.Line, symbol.Column
-			choices = append(choices, discoveryOpenChoice{
-				Label:  fmt.Sprintf("%s · %s :%d", filepath.Base(result.Path), symbol.Name, symbol.Line),
-				Result: target,
-			})
-		}
-	}
-	return choices
+func exploreDiscoveryContext(root, query string, results []discovery.Result, input io.Reader, output io.Writer) error {
+	_, err := runContextExplorer(root, query, results, input, output)
+	return err
 }
 
 func formatDiscovery(results []discovery.Result) string {

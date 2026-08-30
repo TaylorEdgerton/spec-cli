@@ -147,7 +147,7 @@ func TestDiscoverySummaryIsBoundedAndExplainsResults(t *testing.T) {
 	}
 }
 
-func TestDiscoverySummaryShowsSymbolsAndOpenChoicesUseTheirLocations(t *testing.T) {
+func TestDiscoverySummaryShowsSymbols(t *testing.T) {
 	results := []discovery.Result{
 		{
 			Path: "internal/discovery/discovery.go",
@@ -164,36 +164,12 @@ func TestDiscoverySummaryShowsSymbolsAndOpenChoicesUseTheirLocations(t *testing.
 			t.Fatalf("summary missing %q:\n%s", expected, summary)
 		}
 	}
-	choices := discoveryOpenChoices(results)
-	if len(choices) != 2 || choices[0].Result.Line != 448 || choices[0].Result.Column != 6 ||
-		!strings.Contains(choices[0].Label, "discovery.go · addFieldSignals() :448") || choices[1].Result.Line != 62 {
-		t.Fatalf("open choices = %+v", choices)
-	}
-
-	context := exploredSymbol{Path: results[0].Path, Symbol: discovery.Symbol{
-		Name: "addFieldSignals()", Line: 448, Column: 6,
-		Related: []discovery.RelatedSymbol{
-			{Name: "kindWord", Line: 62, Column: 2, Relation: "uses kindWord"},
-			{Name: "addSignal()", Line: 470, Column: 6, Relation: "calls addSignal()"},
-			{Name: "significantWords()", Line: 490, Column: 6, Relation: "receives words from significantWords()"},
-		},
-	}}
-	tree := formatExploreTree(context)
-	for _, expected := range []string{"internal/discovery/discovery.go:448:6", "addFieldSignals()", "├─ uses kindWord", "├─ calls addSignal()", "└─ receives words from significantWords()"} {
-		if !strings.Contains(tree, expected) {
-			t.Fatalf("context tree missing %q:\n%s", expected, tree)
-		}
-	}
-	exploreItems := exploreChoices(context)
-	if len(exploreItems) != 5 || exploreItems[0] != "addFieldSignals() :448" || exploreItems[1] != "kindWord :62" || exploreItems[4] != "Back" {
-		t.Fatalf("explore choices = %+v", exploreItems)
-	}
 }
 
 func TestConsoleSectionsHaveLabelledSeparators(t *testing.T) {
 	var output bytes.Buffer
-	printConsoleSection(&output, "Explore Context", "Choose a location.")
-	if !strings.Contains(output.String(), "── Explore Context ──") || !strings.Contains(output.String(), "Choose a location.") {
+	printConsoleSection(&output, "Change Context", "Likely files.")
+	if !strings.Contains(output.String(), "── Change Context ──") || !strings.Contains(output.String(), "Likely files.") {
 		t.Fatalf("section = %q", output.String())
 	}
 }
