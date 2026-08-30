@@ -24,8 +24,8 @@ func TestWorkflowScreensExposeCanonicalVisualAndNavigationOrder(t *testing.T) {
 		t.Fatalf("definition canonical order = %v, want %v", got, want)
 	}
 	overview := newOverviewModel(overviewData{Facts: overviewFacts{BaselineReady: true}}).screen()
-	if got := overview.selectableItemIDs(); len(got) != 7 || got[0] != "overview.stage.intent" || got[6] != "overview.stage.complete" {
-		t.Fatalf("overview canonical stages = %v", got)
+	if got, want := overview.selectableItemIDs(), []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("overview canonical NEXT actions = %v, want %v", got, want)
 	}
 	plan := newPlanModel(t.TempDir(), reviewPlanFixture()).screen()
 	if got, want := plan.selectableItemIDs(), []string{"plan.file.0", "plan.file.1", "plan.file.2", "plan.integration.0"}; !reflect.DeepEqual(got, want) {
@@ -369,6 +369,13 @@ func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(
 	if !ok || app.screen != screenReview || reviewed.snap.Projection.Stats.Files == 0 {
 		t.Fatalf("explicit review refresh = screen:%q model:%T", app.screen, app.active)
 	}
+	app.Update(workflowNavigateMsg{Action: actionBack})
+	overviewAfterRefresh, ok := app.active.(*overviewModel)
+	if !ok || !overviewAfterRefresh.data.StatsRefreshed || overviewAfterRefresh.data.RefreshedAt.IsZero() || overviewAfterRefresh.data.Stats.Files == 0 {
+		t.Fatalf("Overview did not receive cached explicit refresh: screen:%q model:%T data:%+v", app.screen, app.active, overviewAfterRefresh)
+	}
+	app.Update(workflowNavigateMsg{Action: actionReview})
+	reviewed = app.active.(*reviewModel)
 	reviewed.tab = tabEvidence
 	app.Update(key('s', "s"))
 	if app.screen != screenSummary {
@@ -408,7 +415,7 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 		}, []string{"Spec · New Change", "Define Change", "Intent", "Scope / expected behaviour", "Acceptance", "Create Spec"}},
 		{"overview", func() contractModel {
 			return newOverviewModel(overviewData{Title: "Disable automatic indexing", SpecID: "SPEC-014", Branch: "main", Baseline: reviewBaseline, Intent: "Disable automatic indexing", Scope: "Preserve manual indexing", StartedAt: time.Now().Add(-12 * time.Minute), Now: time.Now(), Facts: overviewFacts{BaselineReady: true}})
-		}, []string{"SPEC-014", "Git: main", "Intent", "Progress", "Implementation"}},
+		}, []string{"SPEC-014", "main", "Intent", "NEXT", "Change lifecycle", "Since baseline"}},
 		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"Implementation Plan", "Summary", "Planned files", "Existing integration points", "enter inspect"}},
 		{"review-files", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))

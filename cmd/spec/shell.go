@@ -34,6 +34,8 @@ const (
 	actionDocuments  = "documents"
 	actionREADME     = "create-readme"
 	actionRunbook    = "create-runbook"
+	actionPrompt     = "copy-implementation-prompt"
+	actionBaseline   = "baseline-details"
 	actionDefinition = "definition"
 	actionOverview   = "overview"
 	actionPlan       = "plan"

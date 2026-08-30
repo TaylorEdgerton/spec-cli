@@ -94,6 +94,10 @@ func (app *workflowApp) updateActive(message tea.Msg) tea.Cmd {
 	}
 	updated, cmd := app.active.Update(message)
 	app.active = updated
+	if reviewModel, ok := app.active.(*reviewModel); ok {
+		snapshot := reviewModel.snap
+		app.reviewed = &snapshot
+	}
 	if action := modelNavigation(app.active); action != actionNone {
 		clearModelNavigation(app.active)
 		return app.navigate(action)
@@ -320,6 +324,8 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 		}
 		if app.reviewed != nil {
 			data.Stats = app.reviewed.Projection.Stats
+			data.StatsRefreshed = true
+			data.RefreshedAt = app.reviewed.RefreshedAt
 			data.Facts.WorkspaceDirty = data.Stats.Files > 0
 			data.Facts.ReviewEntered = true
 		}
@@ -523,10 +529,10 @@ func firstOutputLine(output, fallback string) string {
 func (app *workflowApp) navigationScreen() canonicalScreen {
 	var changeItems []screenItem
 	if app.root != "" {
-		if workspace, err := state.Load(app.root); err == nil && workspace.Active {
-			facts := overviewFacts{SetupActive: workspace.Setup != nil, BaselineReady: workspace.BaseSHA != ""}
-			if stored, _ := workspace.Plan(); stored != nil {
-				facts.PlanAvailable = true
+		if overview, err := loadOverview(app.root, time.Now()); err == nil {
+			facts := overview.Facts
+			if app.reviewed != nil {
+				facts.ReviewEntered = true
 			}
 			for _, stage := range deriveOverviewStages(facts) {
 				marker := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○", stageOmitted: "–"}[stage.Status]
