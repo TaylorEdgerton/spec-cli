@@ -69,6 +69,10 @@ func Head(root string) (string, error) {
 	return output(root, "rev-parse", "HEAD")
 }
 
+func Branch(root string) (string, error) {
+	return output(root, "branch", "--show-current")
+}
+
 func HasBaseline(root string) bool {
 	_, err := Head(root)
 	return err == nil
