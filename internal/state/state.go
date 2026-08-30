@@ -47,6 +47,7 @@ type Metadata struct {
 	Title          string          `json:"title,omitempty"`
 	StartedAt      time.Time       `json:"started_at,omitempty"`
 	BaseSHA        string          `json:"base_sha,omitempty"`
+	GitState       string          `json:"git_state,omitempty"`
 	Setup          *Setup          `json:"setup,omitempty"`
 	VerifyCommands []string        `json:"verify_commands,omitempty"`
 	SandboxSession *SandboxSession `json:"sandbox_session,omitempty"`
@@ -91,6 +92,13 @@ type History struct {
 type Workspace struct {
 	Dir string
 	Metadata
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func configBase() (string, error) {
@@ -306,7 +314,7 @@ func (workspace Workspace) recordSpecStart(now time.Time) error {
 	})
 }
 
-func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
+func (workspace *Workspace) Start(title, baseSHA string, now time.Time, gitState ...string) error {
 	if workspace.Active {
 		return fmt.Errorf("a change is already active; finish it with `spec done`")
 	}
@@ -317,6 +325,7 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
 	workspace.Title = title
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
+	workspace.GitState = firstString(gitState)
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {
@@ -325,7 +334,7 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
 	return workspace.recordSpecStart(now)
 }
 
-func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setup) error {
+func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setup, gitState ...string) error {
 	if workspace.Active {
 		return fmt.Errorf("a change is already active; finish it with `spec done`")
 	}
@@ -337,6 +346,7 @@ func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setu
 	workspace.Title = strings.TrimSpace(setup.Title)
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
+	workspace.GitState = firstString(gitState)
 	workspace.Setup = &copy
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {
@@ -405,6 +415,7 @@ func (workspace *Workspace) Abandon() error {
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.GitState = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	return workspace.saveMetadata()
@@ -537,6 +548,7 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.GitState = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {

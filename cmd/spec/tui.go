@@ -11,8 +11,9 @@ import (
 )
 
 type lineEditor struct {
-	value string
-	pos   int
+	value     string
+	pos       int
+	multiline bool
 }
 
 func newLineEditor(value string) lineEditor {
@@ -20,7 +21,11 @@ func newLineEditor(value string) lineEditor {
 }
 
 func (editor *lineEditor) insert(value string) {
-	value = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(value)
+	if editor.multiline {
+		value = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(value)
+	} else {
+		value = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(value)
+	}
 	current, inserted := []rune(editor.value), []rune(value)
 	editor.pos = clamp(editor.pos, 0, len(current))
 	current = append(current[:editor.pos], append(inserted, current[editor.pos:]...)...)

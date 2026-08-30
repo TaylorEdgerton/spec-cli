@@ -48,6 +48,26 @@ func runNew(args []string, input io.Reader, output io.Writer, interactive bool) 
 		printNewCreated(output, path)
 		return nil
 	}
+	return runDefinitionWorkflow(root, title, input, output)
+}
+
+// runGuidedSetupLegacy remains temporarily as migration support for its
+// formatting/configuration helpers. The interactive entry point above no
+// longer routes through its mandatory discovery and verification stages.
+func runGuidedSetupLegacy(args []string, input io.Reader, output io.Writer, interactive bool) error {
+	root, err := currentRoot()
+	if err != nil {
+		return fmt.Errorf("Git repository is required; run `spec init`")
+	}
+	title := strings.TrimSpace(strings.Join(args, " "))
+	if !interactive {
+		path, err := change.New(root, title, time.Now())
+		if err != nil {
+			return err
+		}
+		printNewCreated(output, path)
+		return nil
+	}
 	setup, err := change.BeginSetup(root, title, time.Now())
 	if err != nil {
 		return err

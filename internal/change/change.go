@@ -29,6 +29,7 @@ func New(root, title string, now time.Time) (string, error) {
 		return "", err
 	}
 	title = strings.TrimSpace(title)
+	gitState := worktreeState(root)
 	path := ActivePath(root)
 	if _, err := os.Stat(path); err == nil {
 		if workspace.Active {
@@ -66,7 +67,7 @@ func New(root, title string, now time.Time) (string, error) {
 		_ = os.Remove(path)
 		return "", closeErr
 	}
-	if err := workspace.Start(title, base, now.UTC()); err != nil {
+	if err := workspace.Start(title, base, now.UTC(), gitState); err != nil {
 		_ = os.Remove(path)
 		return "", err
 	}
@@ -105,10 +106,24 @@ func BeginSetup(root, title string, now time.Time) (state.Setup, error) {
 	if setup.Title != "" {
 		setup.Stage = "outcome"
 	}
-	if err := workspace.BeginSetup(base, now.UTC(), setup); err != nil {
+	if err := workspace.BeginSetup(base, now.UTC(), setup, worktreeState(root)); err != nil {
 		return state.Setup{}, err
 	}
 	return setup, nil
+}
+
+func worktreeState(root string) string {
+	status, err := gitutil.Status(root)
+	if err != nil {
+		return "unknown"
+	}
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "##") {
+			return "dirty"
+		}
+	}
+	return "clean"
 }
 
 func BeginEdit(root string) (state.Setup, error) {
@@ -200,9 +215,9 @@ func SaveSetup(root string, setup state.Setup) (string, error) {
 }
 
 func SetupFromMarkdown(markdown string) (state.Setup, error) {
-	title := documentTitle(markdown)
+	title := sectionText(markdown, "Intent")
 	if title == "" {
-		title = sectionText(markdown, "Intent")
+		title = documentTitle(markdown)
 	}
 	if title == "" {
 		return state.Setup{}, fmt.Errorf("active specification has no title or Intent")

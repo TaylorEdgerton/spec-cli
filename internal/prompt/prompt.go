@@ -40,6 +40,8 @@ type contextFile struct {
 	discovered bool
 }
 
+var findContext = discovery.Find
+
 func Build(root string, includeFiles bool) (string, Info, error) {
 	workspace, err := state.Load(root)
 	if err != nil {
@@ -64,6 +66,40 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 	builder.WriteString("Make the smallest understandable change.\n")
 	builder.WriteString("Do not claim verification was run unless it actually was.\n")
 	builder.WriteString("Surface conflicting requirements rather than guessing.\n\n")
+	if setup, setupErr := change.SetupFromMarkdown(current); setupErr == nil {
+		builder.WriteString("## Change contract\n\n")
+		builder.WriteString("Intent: ")
+		builder.WriteString(setup.Title)
+		builder.WriteByte('\n')
+		if strings.TrimSpace(setup.Outcome) != "" {
+			builder.WriteString("Scope / expected behaviour: ")
+			builder.WriteString(setup.Outcome)
+			builder.WriteByte('\n')
+		}
+		if len(setup.Criteria) > 0 {
+			builder.WriteString("Acceptance criteria:\n")
+			for _, criterion := range setup.Criteria {
+				if criterion.Included && strings.TrimSpace(criterion.Text) != "" {
+					builder.WriteString("- ")
+					builder.WriteString(criterion.Text)
+					builder.WriteByte('\n')
+				}
+			}
+		}
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("Discovery context below is advisory and may be absent.\n")
+	builder.WriteString("Optionally return one fenced `spec-plan` JSON block using this provider-neutral schema:\n\n")
+	builder.WriteString("```spec-plan\n")
+	builder.WriteString("{\n")
+	builder.WriteString("  \"summary\": \"short implementation summary\",\n")
+	builder.WriteString("  \"files\": [{\"path\": \"repository/relative/path\", \"action\": \"modify\", \"reason\": \"why\"}],\n")
+	builder.WriteString("  \"integration_points\": [{\"existing_symbol\": \"symbol\", \"planned_change\": \"change\", \"relationship\": \"relationship\"}],\n")
+	builder.WriteString("  \"verification\": [{\"behaviour\": \"expected behaviour\", \"likely_location\": \"optional path\"}],\n")
+	builder.WriteString("  \"uncertainties\": [\"open question\"]\n")
+	builder.WriteString("}\n")
+	builder.WriteString("```\n\n")
+	builder.WriteString("Allowed file actions are `create`, `modify`, and `delete`. The plan is optional; continue implementation if you do not provide it.\n\n")
 	info := Info{}
 	files := promptFiles(root, current)
 
@@ -225,7 +261,7 @@ func promptFiles(root, markdown string) []contextFile {
 			query.Criteria = append(query.Criteria, criterion.Text)
 		}
 	}
-	results, err := discovery.Find(root, query)
+	results, err := findContext(root, query)
 	if err != nil {
 		return files
 	}
