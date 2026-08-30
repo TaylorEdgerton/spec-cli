@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -33,10 +32,23 @@ type definitionModel struct {
 	editTarget int
 	criterion  int
 	editor     lineEditor
+	help       bool
+	nav        string
+	viewport   int
 }
 
 func newDefinitionModel(setup state.Setup, gitState string) *definitionModel {
 	return &definitionModel{setup: setup, gitState: gitState, editTarget: -1}
+}
+
+func (model *definitionModel) screen() canonicalScreen {
+	items := []screenItem{
+		{ID: definitionIntentID, Label: "Intent", Selectable: true},
+		{ID: definitionScopeID, Label: "Scope / expected behaviour", Selectable: true},
+		{ID: definitionAcceptanceID, Label: "Acceptance", Selectable: true},
+		{ID: definitionCreateID, Label: "Create Spec", Selectable: true, Action: screenAction(actionOverview)},
+	}
+	return canonicalScreen{Sections: []screenSection{{ID: "definition", Title: "Define Change", Items: items}}, Cursor: model.focus}
 }
 
 func (model *definitionModel) Init() tea.Cmd { return nil }
@@ -57,7 +69,7 @@ func (model *definitionModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		keystroke := message.Keystroke()
 		if keystroke == "ctrl+c" {
-			model.done, model.cancelled = true, true
+			model.leave(actionQuit)
 			return model, tea.Quit
 		}
 		if keystroke == "ctrl+enter" {
@@ -65,9 +77,13 @@ func (model *definitionModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.commitEdit()
 			}
 			if model.createEnabled() {
-				model.done, model.created = true, true
+				model.done, model.created, model.nav = true, true, actionOverview
 				return model, tea.Quit
 			}
+			return model, nil
+		}
+		if keystroke == "?" && !model.editing {
+			model.help = !model.help
 			return model, nil
 		}
 		if model.editing {
@@ -78,20 +94,23 @@ func (model *definitionModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.commitEdit()
 			case "tab":
 				model.commitEdit()
-				model.focus = wrap(model.focus+1, len(model.fieldIDs()))
+				model.focus = wrap(model.focus+1, len(model.screen().selectableItems()))
 			default:
 				model.editor.key(message)
 			}
 			return model, nil
 		}
 		switch keystroke {
-		case "q", "esc":
-			model.done, model.cancelled = true, true
+		case "q":
+			model.leave(actionQuit)
+			return model, tea.Quit
+		case "esc", "b":
+			model.leave(actionBack)
 			return model, tea.Quit
 		case "tab", "down", "j":
-			model.focus = wrap(model.focus+1, len(model.fieldIDs()))
+			model.focus = wrap(model.focus+1, len(model.screen().selectableItems()))
 		case "shift+tab", "up", "k":
-			model.focus = wrap(model.focus-1, len(model.fieldIDs()))
+			model.focus = wrap(model.focus-1, len(model.screen().selectableItems()))
 		case "a":
 			if model.focusedID() == definitionAcceptanceID {
 				model.startEdit(-1)
@@ -113,13 +132,22 @@ func (model *definitionModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case definitionCreateID:
 				if model.createEnabled() {
-					model.done, model.created = true, true
+					model.done, model.created, model.nav = true, true, actionOverview
 					return model, tea.Quit
 				}
 			}
 		}
 	}
 	return model, nil
+}
+
+func (model *definitionModel) leave(action string) {
+	model.done, model.cancelled, model.nav = true, true, action
+}
+
+func (model *definitionModel) hints() [][2]string {
+	return [][2]string{{"Tab", "field"}, {"Enter", "edit/select"}, {"Ctrl+Enter", "create"},
+		{"?", "help"}, {"b", "back"}, {"q", "cancel"}}
 }
 
 func (model *definitionModel) View() tea.View {
@@ -133,6 +161,12 @@ func (model *definitionModel) View() tea.View {
 	if height <= 0 {
 		height = 32
 	}
+	if model.help {
+		return tea.NewView(uiAppShell(width, height, uiSplit("Spec · New Change", "Git: "+model.gitState, max(1, width-8)),
+			uiHelpOverlay(model.hints()), uiKeyHints(model.hints(), "    ")))
+	}
+	screen := model.screen()
+	items := screen.Sections[0].Items
 	inner := max(20, width-8)
 	field := func(id, label, value string, target int) string {
 		if model.editing && model.editTarget == target {
@@ -157,31 +191,33 @@ func (model *definitionModel) View() tea.View {
 	} else if len(criteria) == 0 {
 		criteria = append(criteria, uiMutedStyle.Render("No acceptance criteria yet; this is optional."))
 	}
-	create := "[ Create Spec ]"
+	createLabel := items[3].Label
+	create := "[ " + createLabel + " ]"
 	if !model.createEnabled() {
-		create = uiMutedStyle.Render("[ Create Spec · intent required ]")
+		create = uiMutedStyle.Render("[ " + createLabel + " · intent required ]")
 	} else if model.focusedID() == definitionCreateID {
 		create = uiSelectedRow(create, 0)
 	} else {
 		create = uiEvidenceStyle.Render(create)
 	}
 	body := strings.Join([]string{
-		uiTitleStyle.Render("Define Change"),
-		field(definitionIntentID, "Intent", model.setup.Title, 0),
-		field(definitionScopeID, "Scope / expected behaviour", model.setup.Outcome, 1),
-		uiTitleStyle.Render("Acceptance") + "\n" + strings.Join(criteria, "\n"),
-		strings.Repeat(" ", max(0, inner-len("[ Create Spec ]"))) + create,
+		uiTitleStyle.Render(screen.Sections[0].Title),
+		field(items[0].ID, items[0].Label, model.setup.Title, 0),
+		field(items[1].ID, items[1].Label, model.setup.Outcome, 1),
+		uiTitleStyle.Render(items[2].Label) + "\n" + strings.Join(criteria, "\n"),
+		strings.Repeat(" ", max(0, inner-len("[ "+createLabel+" ]"))) + create,
 	}, "\n\n")
 	header := uiSplit("Spec · New Change", "Git: "+model.gitState, max(1, width-8))
-	footer := uiKeyHints([][2]string{{"Tab", "field"}, {"Enter", "edit/select"}, {"Ctrl+Enter", "create"}, {"q", "cancel"}}, "    ")
-	return tea.NewView(uiAppShell(width, height, header, body, footer))
+	anchor := model.focusedID()
+	anchor = map[string]string{definitionIntentID: "Intent", definitionScopeID: "Scope / expected behaviour", definitionAcceptanceID: "Acceptance", definitionCreateID: "Create Spec"}[anchor]
+	body, model.viewport = uiViewportBody(body, uiWorkflowBodyHeight(height, header), model.viewport, anchor)
+	return tea.NewView(uiAppShell(width, height, header, body, uiKeyHints(model.hints(), "    ")))
 }
 
-func (model *definitionModel) fieldIDs() []string {
-	return []string{definitionIntentID, definitionScopeID, definitionAcceptanceID, definitionCreateID}
+func (model *definitionModel) focusedID() string {
+	items := model.screen().selectableItems()
+	return items[clamp(model.focus, 0, len(items)-1)].ID
 }
-
-func (model *definitionModel) focusedID() string { return model.fieldIDs()[model.focus] }
 
 func (model *definitionModel) createEnabled() bool {
 	value := model.setup.Title
@@ -227,70 +263,23 @@ func (model *definitionModel) commitEdit() {
 	model.setup.Stage = "definition"
 }
 
-func runDefinition(input io.Reader, output io.Writer, setup state.Setup, gitState string) (state.Setup, bool, error) {
-	model := newDefinitionModel(setup, gitState)
-	final, err := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output)).Run()
-	if err != nil {
-		return setup, false, err
-	}
-	result := final.(*definitionModel)
-	return result.result(), result.cancelled, nil
-}
-
-func runDefinitionWorkflow(root, title string, input io.Reader, output io.Writer) error {
-	setup, err := change.BeginSetup(root, title, time.Now())
-	if err != nil {
-		return err
-	}
-	workspace, err := state.Load(root)
-	if err != nil {
-		return err
-	}
-	if setup.Editing {
-		if _, statErr := os.Stat(change.ActivePath(root)); os.IsNotExist(statErr) {
-			choice, stopped, chooseErr := runChoice(input, output, "Active specification is missing", "`.spec.md` was deleted during a paused edit. Saved fields can be recreated, but custom Notes content cannot.", []string{
-				"Recreate .spec.md from saved edit", "Start a replacement Spec", "Exit",
-			})
-			if chooseErr != nil || stopped || choice == 2 {
-				return chooseErr
-			}
-			if choice == 1 {
-				if err := workspace.Abandon(); err != nil {
-					return err
-				}
-				return runDefinitionWorkflow(root, "", input, output)
-			}
-			path, err := change.CreateSetup(root, setup)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(output, "Recreated active specification from saved edit: %s\n", path)
-			return nil
-		} else if statErr != nil {
-			return statErr
-		}
-	}
-	setup, cancelled, err := runDefinition(input, output, setup, workspace.GitState)
-	if err != nil {
-		return err
-	}
-	setup.Stage = "definition"
-	if cancelled {
-		return saveAndExit(root, setup, output)
-	}
-	if _, err := completeDefinition(root, setup, output, definitionServices{}); err != nil {
-		return err
-	}
-	fmt.Fprintln(output, "Spec is ready for Overview.")
-	return nil
-}
-
 type definitionServices struct {
 	BuildPrompt func(string) (string, error)
 	CopyPrompt  func(string) error
 }
 
 func completeDefinition(root string, setup state.Setup, output io.Writer, services definitionServices) (string, error) {
+	path, err := saveDefinitionContract(root, setup, output)
+	if err != nil {
+		return "", err
+	}
+	if err := deliverDefinitionPrompt(root, output, services); err != nil {
+		return path, err
+	}
+	return path, nil
+}
+
+func saveDefinitionContract(root string, setup state.Setup, output io.Writer) (string, error) {
 	setup.Stage = "definition"
 	path, err := change.SaveSetup(root, setup)
 	if err != nil {
@@ -301,6 +290,10 @@ func completeDefinition(root string, setup state.Setup, output io.Writer, servic
 	} else {
 		printNewCreated(output, path)
 	}
+	return path, nil
+}
+
+func deliverDefinitionPrompt(root string, output io.Writer, services definitionServices) error {
 	if services.BuildPrompt == nil {
 		services.BuildPrompt = func(root string) (string, error) {
 			content, _, err := promptbuilder.Build(root, false)
@@ -312,18 +305,18 @@ func completeDefinition(root string, setup state.Setup, output io.Writer, servic
 	}
 	prompt, err := services.BuildPrompt(root)
 	if err != nil {
-		return path, err
+		return err
 	}
 	if err := services.CopyPrompt(prompt); err == nil {
 		fmt.Fprintln(output, "Implementation prompt copied to the clipboard.")
 		recordPromptDelivery(root, state.TimelinePromptCopied)
-		return path, nil
+		return nil
 	} else {
 		fmt.Fprintf(output, "Clipboard unavailable: %v\n", err)
 		fmt.Fprintln(output, "Print/copy fallback (retry with `spec prompt --copy`):")
 		fmt.Fprintln(output, prompt)
 		recordPromptDelivery(root, state.TimelinePromptPrinted)
-		return path, nil
+		return nil
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 
 func TestDefinitionUsesStableFieldOrderAndIntentValidation(t *testing.T) {
 	model := newDefinitionModel(state.Setup{}, "clean")
-	if got, want := model.fieldIDs(), []string{definitionIntentID, definitionScopeID, definitionAcceptanceID, definitionCreateID}; !reflect.DeepEqual(got, want) {
+	if got, want := model.screen().selectableItemIDs(), []string{definitionIntentID, definitionScopeID, definitionAcceptanceID, definitionCreateID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("field IDs = %v, want %v", got, want)
 	}
 	if model.createEnabled() {
