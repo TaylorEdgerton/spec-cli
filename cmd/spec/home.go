@@ -187,45 +187,7 @@ func resumeActiveSpec(root string, input io.Reader, output io.Writer) error {
 }
 
 func runExploreCodebase(root string, input io.Reader, output io.Writer) (bool, error) {
-queryLoop:
-	for {
-		query, back, stopped, err := runTextPrompt(input, output, "Explore Codebase", "Codebase query:", "", false, true)
-		if err != nil || stopped {
-			return stopped, err
-		}
-		if back {
-			return false, nil
-		}
-		results, discoveryErr := findCodebaseContext(root, query)
-		for {
-			detail := formatDiscovery(results)
-			if discoveryErr != nil {
-				detail = "Discovery was unavailable. Try a different query or use repository search."
-			}
-			var items, actions []string
-			if len(results) > 0 {
-				items = append(items, "Explore context")
-				actions = append(actions, "explore")
-			}
-			items = append(items, "New query", "Back")
-			actions = append(actions, "query", "back")
-			printConsoleSection(output, "Codebase Context", detail)
-			choice, stopped, err := runChoice(input, output, "", "", items)
-			if err != nil || stopped {
-				return stopped, err
-			}
-			switch actions[choice] {
-			case "explore":
-				if err := exploreDiscoveryContext(root, results, input, output); err != nil {
-					fmt.Fprintf(output, "Could not explore context: %v\n", err)
-				}
-			case "query":
-				continue queryLoop
-			case "back":
-				return false, nil
-			}
-		}
-	}
+	return runContextExplorer(root, "", nil, input, output)
 }
 
 func findCodebaseContext(root, query string) ([]discovery.Result, error) {
