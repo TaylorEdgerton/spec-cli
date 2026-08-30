@@ -18,10 +18,31 @@ type planModel struct {
 	status                string
 	cursor, width, height int
 	done                  bool
+	help                  bool
+	nav                   string
+	viewport              int
 }
 
 func newPlanModel(root string, stored *state.StoredChangePlan) *planModel {
 	return &planModel{root: root, stored: stored, open: openInVSCode}
+}
+
+func (m *planModel) screen() canonicalScreen {
+	if m.stored == nil {
+		return canonicalScreen{Sections: []screenSection{{ID: "plan", Title: "Implementation Plan", EmptyReason: "No implementation plan was submitted."}}}
+	}
+	files := make([]screenItem, 0, len(m.stored.Plan.Files))
+	for index, file := range m.stored.Plan.Files {
+		files = append(files, screenItem{ID: fmt.Sprintf("plan.file.%d", index), Label: file.Path, Selectable: true, Preview: file})
+	}
+	integrations := make([]screenItem, 0, len(m.stored.Plan.IntegrationPoints))
+	for index, item := range m.stored.Plan.IntegrationPoints {
+		integrations = append(integrations, screenItem{ID: fmt.Sprintf("plan.integration.%d", index), Label: item.ExistingSymbol, Selectable: true, Preview: item})
+	}
+	return canonicalScreen{Sections: []screenSection{
+		{ID: "files", Title: "Planned files", Items: files},
+		{ID: "integrations", Title: "Existing integration points", Items: integrations},
+	}, Cursor: m.cursor}
 }
 func (m *planModel) Init() tea.Cmd { return nil }
 func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -29,42 +50,59 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
 	case tea.InterruptMsg:
-		m.done = true
+		m.leave(actionQuit)
 		return m, tea.Quit
 	case tea.KeyPressMsg:
 		switch v.Keystroke() {
 		case "up", "k":
-			m.cursor, m.status = wrap(m.cursor-1, len(m.selectableIDs())), ""
+			m.cursor, m.status = wrap(m.cursor-1, len(m.screen().selectableItems())), ""
 		case "down", "j":
-			m.cursor, m.status = wrap(m.cursor+1, len(m.selectableIDs())), ""
+			m.cursor, m.status = wrap(m.cursor+1, len(m.screen().selectableItems())), ""
+		case "pgup":
+			m.viewport = max(0, m.viewport-max(1, m.height/2))
+		case "pgdown":
+			m.viewport += max(1, m.height/2)
 		case "o":
 			m.openSelected()
-		case "q", "b", "esc", "ctrl+c":
-			m.done = true
+		case "enter":
+			if path, ok := m.selectedFile(); ok {
+				m.status = "Inspecting " + path + " in the preview."
+			} else {
+				m.status = "Inspecting the selected integration point."
+			}
+		case "e":
+			m.leave(actionPlanCapture)
+			return m, tea.Quit
+		case "c":
+			m.leave(actionContinue)
+			return m, tea.Quit
+		case "?":
+			m.help = !m.help
+		case "r":
+			m.leave(actionReview)
+			return m, tea.Quit
+		case "b", "esc":
+			m.leave(actionBack)
+			return m, tea.Quit
+		case "q", "ctrl+c":
+			m.leave(actionQuit)
 			return m, tea.Quit
 		}
 	}
 	return m, nil
 }
-func (m *planModel) selectableIDs() []string {
-	if m.stored == nil {
-		return nil
-	}
-	ids := make([]string, 0, len(m.stored.Plan.Files)+len(m.stored.Plan.IntegrationPoints))
-	for i := range m.stored.Plan.Files {
-		ids = append(ids, fmt.Sprintf("plan.file.%d", i))
-	}
-	for i := range m.stored.Plan.IntegrationPoints {
-		ids = append(ids, fmt.Sprintf("plan.integration.%d", i))
-	}
-	return ids
+
+func (m *planModel) leave(action string) { m.done, m.nav = true, action }
+
+func (m *planModel) hints() [][2]string {
+	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}, {"?", "help"}}
 }
 func (m *planModel) selectedID() string {
-	ids := m.selectableIDs()
-	if len(ids) == 0 {
+	item, ok := m.screen().selectedItem()
+	if !ok {
 		return ""
 	}
-	return ids[clamp(m.cursor, 0, len(ids)-1)]
+	return item.ID
 }
 
 // selectedFile reports the planned file path when the cursor is on a file row.
@@ -100,24 +138,30 @@ func (m *planModel) View() tea.View {
 	if h <= 0 {
 		h = 32
 	}
+	if m.help {
+		return tea.NewView(uiAppShell(w, h, "Implementation Plan", uiHelpOverlay(m.hints()), uiKeyHints(m.hints(), "  ")))
+	}
 	if m.stored == nil {
 		body := uiEmptyState("No implementation plan", "No implementation plan was submitted. The plan is optional; actual-change review remains available.")
-		return tea.NewView(uiAppShell(w, h, "Implementation Plan", body, uiKeyHints([][2]string{{"b", "back"}}, "  ")))
+		return tea.NewView(uiAppShell(w, h, "Implementation Plan", body, uiKeyHints(m.hints(), "  ")))
 	}
 	p := m.stored.Plan
+	screen := m.screen()
 	lines := []string{uiTitleStyle.Render("Summary"), p.Summary, "", uiTitleStyle.Render("Planned files")}
 	selected := m.selectedID()
-	for i, f := range p.Files {
+	for _, item := range screen.Sections[0].Items {
+		f := item.Preview.(state.PlannedFile)
 		row := fmt.Sprintf("  %s %s\n    %s", strings.ToUpper(string(f.Action[:1])), f.Path, f.Reason)
-		if selected == fmt.Sprintf("plan.file.%d", i) {
+		if selected == item.ID {
 			row = uiSelectedRow("> "+string(f.Action)+" "+f.Path, 0) + "\n    " + f.Reason
 		}
 		lines = append(lines, row)
 	}
 	lines = append(lines, "", uiTitleStyle.Render("Existing integration points"))
-	for i, item := range p.IntegrationPoints {
+	for _, screenItem := range screen.Sections[1].Items {
+		item := screenItem.Preview.(state.PlannedIntegration)
 		row := fmt.Sprintf("  %s\n    ↳ %s · %s", item.ExistingSymbol, item.PlannedChange, item.Relationship)
-		if selected == fmt.Sprintf("plan.integration.%d", i) {
+		if selected == screenItem.ID {
 			row = uiSelectedRow("> "+item.ExistingSymbol, 0) + "\n    ↳ " + item.PlannedChange + " · " + item.Relationship
 		}
 		lines = append(lines, row)
@@ -145,9 +189,15 @@ func (m *planModel) View() tea.View {
 		lines = append(lines, "", uiMutedStyle.Render(m.status))
 	}
 	header := fmt.Sprintf("Implementation Plan  AGENT PLAN\nSubmitted %s · %s · %s", m.stored.SubmittedAt.Format("15:04"), emptyAs(m.stored.Submitter, "unknown submitter"), m.stored.Source)
-	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"o", "VS Code"}, {"b", "back"}}, "  ")
-	return tea.NewView(uiAppShell(w, h, header, strings.Join(lines, "\n"), footer))
+	body := strings.Join(lines, "\n")
+	anchor := ""
+	if item, ok := m.screen().selectedItem(); ok {
+		anchor = item.Label
+	}
+	body, m.viewport = uiViewportBody(body, uiWorkflowBodyHeight(h, header), m.viewport, anchor)
+	return tea.NewView(uiAppShell(w, h, header, body, uiKeyHints(m.hints(), "  ")))
 }
+
 func (m *planModel) preview() string {
 	path, ok := m.selectedFile()
 	if !ok {

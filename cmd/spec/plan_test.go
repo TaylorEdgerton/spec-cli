@@ -83,7 +83,7 @@ func TestPlanScreenRendersAllSectionsAndSelectionIsReadOnly(t *testing.T) {
 	if !reflect.DeepEqual(*stored, original) {
 		t.Fatalf("selection mutated plan: %+v", stored)
 	}
-	if len(model.selectableIDs()) < 3 || !strings.HasPrefix(model.selectedID(), "plan.") {
-		t.Fatalf("selection IDs = %v selected=%q", model.selectableIDs(), model.selectedID())
+	if ids := model.screen().selectableItemIDs(); len(ids) < 3 || !strings.HasPrefix(model.selectedID(), "plan.") {
+		t.Fatalf("selection IDs = %v selected=%q", ids, model.selectedID())
 	}
 }
