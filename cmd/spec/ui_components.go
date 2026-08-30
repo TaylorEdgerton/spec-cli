@@ -136,6 +136,12 @@ func uiAppShell(width, height int, header, body, footer string) string {
 	)
 }
 
+func uiMinimumSize(width, height int) string {
+	return uiAppShell(width, height, "Terminal is too small",
+		fmt.Sprintf("Spec needs at least %dx%d; this terminal is %dx%d.", homeMinWidth, homeMinHeight, width, height),
+		"Resize the terminal to continue.")
+}
+
 func uiEmptyState(title, reason string) string {
 	var lines []string
 	if strings.TrimSpace(title) != "" {
