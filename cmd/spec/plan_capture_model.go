@@ -80,7 +80,7 @@ func (model *planCaptureModel) updatePaste(message tea.KeyPressMsg) {
 		model.mode, model.cursor, model.status = planCapturePreview, 0, ""
 	case "esc", "b":
 		model.decision, model.nav = planSkip, actionBack
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		model.nav = actionQuit
 	default:
 		model.editor.key(message)
@@ -110,6 +110,10 @@ func (model *planCaptureModel) updatePreview(message tea.KeyPressMsg) {
 		case planSkip:
 			model.nav = actionContinue
 		}
+	case "b", "esc":
+		model.nav = actionBack
+	case "ctrl+c":
+		model.nav = actionQuit
 	}
 }
 
@@ -117,7 +121,7 @@ func (model *planCaptureModel) View() tea.View {
 	width, height := defaultSize(model.width, model.height)
 	if model.mode == planCapturePaste {
 		body := strings.Join([]string{uiTitleStyle.Render("Paste AI response"), "", uiMutedStyle.Render("Paste one response containing exactly one fenced spec-plan block."), "", model.editor.view(), "", uiMutedStyle.Render(model.status)}, "\n")
-		footer := uiKeyHints([][2]string{{"Ctrl+Enter", "preview"}, {"b", "skip"}, {"q", "exit"}}, "  ")
+		footer := uiKeyHints([][2]string{{"Ctrl+Enter", "preview"}, {"b", "skip"}, {"g", "home"}}, "  ")
 		body, model.viewport = uiViewportBody(body, uiWorkflowBodyHeight(height, "Implementation Plan · Capture"), model.viewport, "")
 		return tea.NewView(uiAppShell(width, height, "Implementation Plan · Capture", body, footer))
 	}
@@ -129,7 +133,7 @@ func (model *planCaptureModel) View() tea.View {
 		}
 		lines = append(lines, row)
 	}
-	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "action"}, {"q", "exit"}}, "  ")
+	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "action"}, {"b", "back"}, {"g", "home"}}, "  ")
 	body, next := uiViewportBody(strings.Join(lines, "\n"), uiWorkflowBodyHeight(height, "Implementation Plan · Preview"), model.viewport, model.screen().selectedItemLabel())
 	model.viewport = next
 	return tea.NewView(uiAppShell(width, height, "Implementation Plan · Preview", body, footer))

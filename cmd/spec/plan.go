@@ -84,7 +84,7 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "b", "esc":
 			m.leave(actionBack)
 			return m, tea.Quit
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			m.leave(actionQuit)
 			return m, tea.Quit
 		}
@@ -95,7 +95,7 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *planModel) leave(action string) { m.done, m.nav = true, action }
 
 func (m *planModel) hints() [][2]string {
-	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}, {"?", "help"}}
+	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
 }
 func (m *planModel) selectedID() string {
 	item, ok := m.screen().selectedItem()
