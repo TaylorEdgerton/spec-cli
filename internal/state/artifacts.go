@@ -112,6 +112,7 @@ type EvidenceRun struct {
 	Command             string         `json:"command,omitempty"`
 	Passed              bool           `json:"passed"`
 	Manual              bool           `json:"manual,omitempty"`
+	ParserError         string         `json:"parser_error,omitempty"`
 	BaselineSHA         string         `json:"baseline_sha,omitempty"`
 	WorktreeFingerprint string         `json:"worktree_fingerprint,omitempty"`
 	StartedAt           time.Time      `json:"started_at"`
