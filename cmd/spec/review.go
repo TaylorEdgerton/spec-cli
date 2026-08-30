@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +53,7 @@ type reviewRow struct{ ID, Label, Detail string }
 type reviewSnapshot struct {
 	SpecID, Title, Intent, Scope, Baseline string
 	Plan                                   *state.StoredChangePlan
+	Criteria                               []change.Criterion
 	Projection                             review.Projection
 	Evidence                               evidence.Report
 	Hunks                                  map[string][]review.HunkReview
@@ -69,6 +71,9 @@ type reviewModel struct {
 	decision      reviewDecision
 	width, height int
 	done          bool
+	help          bool
+	nav           string
+	viewport      int
 
 	refresh  func(string) (reviewSnapshot, error)
 	record   func(string, state.TimelineEvent) error
@@ -89,6 +94,50 @@ func newReviewModel(root string, snap reviewSnapshot) *reviewModel {
 	}
 }
 
+func (m *reviewModel) screen() canonicalScreen {
+	items := make([]screenItem, 0)
+	sections := make([]screenSection, 0, 1)
+	switch m.tab {
+	case tabFiles:
+		for _, file := range m.filteredFiles() {
+			items = append(items, screenItem{ID: "review.file." + file.Path, Label: file.Path, Detail: file.Reason, Selectable: true, Preview: file})
+		}
+	case tabIntegration:
+		for index, item := range m.snap.Projection.Integrations {
+			items = append(items, screenItem{ID: fmt.Sprintf("review.integration.%d", index), Label: item.Symbol, Detail: item.Relationship, Selectable: true, Preview: item})
+		}
+	case tabEvidence:
+		for _, category := range []struct {
+			id, title string
+			category  evidence.Category
+		}{{"existing", "Existing before change", evidence.CategoryExisting}, {"reproduction", "Pre-change reproduction", evidence.CategoryFailThenPass}, {"new", "Added during implementation", evidence.CategoryNewTest}, {"modified", "Modified existing tests", evidence.CategoryModifiedExisting}, {"manual", "Manual claims", evidence.CategoryManual}} {
+			categoryItems := make([]screenItem, 0)
+			for _, item := range m.snap.Evidence.Items {
+				if item.Category == category.category {
+					categoryItems = append(categoryItems, screenItem{ID: "review.evidence." + item.ID, Label: item.Name, Detail: string(item.Category), Selectable: true, Preview: item})
+				}
+			}
+			if len(categoryItems) > 0 {
+				sections = append(sections, screenSection{ID: "review.evidence." + category.id, Title: category.title, Items: categoryItems})
+			}
+		}
+	case tabDiff:
+		for _, file := range m.diffFiles() {
+			items = append(items, screenItem{ID: "review.diff." + file.Path, Label: file.Path, Selectable: true, Preview: file})
+		}
+	case tabStats:
+		items = []screenItem{
+			{ID: "review.complete", Label: "Complete Spec", Selectable: true, Action: screenAction(actionComplete)},
+			{ID: "review.request_changes", Label: "Request Changes", Selectable: true, Action: screenAction(actionChanges)},
+		}
+	}
+	if len(sections) > 0 {
+		return canonicalScreen{Sections: sections, Cursor: m.cursors[m.tab]}
+	}
+	section := screenSection{ID: "review." + strings.ToLower(reviewTabLabels[m.tab]), Title: reviewTabLabels[m.tab], Items: items, EmptyReason: "No items are available in this view."}
+	return canonicalScreen{Sections: []screenSection{section}, Cursor: m.cursors[m.tab]}
+}
+
 func (m *reviewModel) Init() tea.Cmd { return nil }
 
 func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -96,7 +145,7 @@ func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
 	case tea.InterruptMsg:
-		m.done = true
+		m.leave(actionQuit)
 		return m, tea.Quit
 	case tea.KeyPressMsg:
 		return m, m.key(v.Keystroke())
@@ -114,6 +163,10 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 		m.move(-1)
 	case "down", "j":
 		m.move(1)
+	case "pgup":
+		m.viewport = max(0, m.viewport-max(1, m.height/2))
+	case "pgdown":
+		m.viewport += max(1, m.height/2)
 	case "n":
 		m.moveHunk(1)
 	case "p":
@@ -132,24 +185,33 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 		m.runSelectedTests()
 	case "r":
 		m.refreshSnapshot()
+	case "s":
+		if m.tab == tabEvidence {
+			m.leave(actionSummary)
+			return tea.Quit
+		}
 	case "enter":
-		m.activate()
+		return m.activate()
+	case "?":
+		m.help = !m.help
 	case "b", "esc":
-		m.done = true
+		m.leave(actionBack)
 		return tea.Quit
 	case "q", "ctrl+c":
-		m.done = true
+		m.leave(actionQuit)
 		return tea.Quit
 	}
 	return nil
 }
 
+func (m *reviewModel) leave(action string) { m.done, m.nav = true, action }
+
 func (m *reviewModel) selectTab(tab reviewTab) {
-	m.tab, m.hunk, m.status = tab, 0, ""
+	m.tab, m.hunk, m.status, m.viewport = tab, 0, "", 0
 }
 
 func (m *reviewModel) move(delta int) {
-	count := len(m.rows())
+	count := len(m.screen().selectableItems())
 	if count == 0 {
 		return
 	}
@@ -229,25 +291,30 @@ func (m *reviewModel) refreshSnapshot() {
 	m.recordEvent(state.TimelineActualRefreshed, "actual state refreshed")
 }
 
-func (m *reviewModel) activate() {
+func (m *reviewModel) activate() tea.Cmd {
 	row, ok := m.selectedRow()
 	if !ok {
-		return
+		return nil
 	}
 	switch {
 	case row.ID == "review.complete":
 		m.decision = decisionComplete
-		m.status = "Completion requested; confirm it on the Change Summary."
+		m.status = "Completion acknowledged; the Spec is being archived."
 		m.recordEvent(state.TimelineReviewDecision, "human acknowledged completion")
+		m.leave(actionComplete)
+		return tea.Quit
 	case row.ID == "review.request_changes":
 		m.decision = decisionChanges
 		m.status = "Changes requested; the plan, evidence, and review facts are kept."
 		m.recordEvent(state.TimelineChangesRequested, "human requested more changes")
+		m.leave(actionChanges)
+		return tea.Quit
 	case m.tab == tabFiles:
 		m.showDiff()
 	case m.tab == tabIntegration, m.tab == tabDiff:
 		m.openSelected()
 	}
+	return nil
 }
 
 func (m *reviewModel) recordEvent(eventType state.TimelineEventType, summary string) {
@@ -286,63 +353,39 @@ func (m *reviewModel) diffFiles() []review.FileReview {
 	return files
 }
 
-func (m *reviewModel) rows() []reviewRow {
-	switch m.tab {
-	case tabFiles:
-		rows := make([]reviewRow, 0)
-		for _, file := range m.filteredFiles() {
-			rows = append(rows, reviewRow{ID: "review.file." + file.Path, Label: file.Path, Detail: file.Reason})
-		}
-		return rows
-	case tabIntegration:
-		rows := make([]reviewRow, 0)
-		for index, item := range m.snap.Projection.Integrations {
-			rows = append(rows, reviewRow{ID: fmt.Sprintf("review.integration.%d", index), Label: item.Symbol, Detail: item.Relationship})
-		}
-		return rows
-	case tabEvidence:
-		rows := make([]reviewRow, 0)
-		for _, item := range m.snap.Evidence.Items {
-			rows = append(rows, reviewRow{ID: "review.evidence." + item.ID, Label: item.Name, Detail: string(item.Category)})
-		}
-		return rows
-	case tabDiff:
-		rows := make([]reviewRow, 0)
-		for _, file := range m.diffFiles() {
-			rows = append(rows, reviewRow{ID: "review.diff." + file.Path, Label: file.Path})
-		}
-		return rows
-	case tabStats:
-		return []reviewRow{
-			{ID: "review.complete", Label: "Complete Spec"},
-			{ID: "review.request_changes", Label: "Request Changes"},
-		}
-	}
-	return nil
-}
-
 func (m *reviewModel) selectedRow() (reviewRow, bool) {
-	rows := m.rows()
-	if len(rows) == 0 {
+	item, ok := m.screen().selectedItem()
+	if !ok {
 		return reviewRow{}, false
 	}
-	return rows[clamp(m.cursors[m.tab], 0, len(rows)-1)], true
+	return reviewRow{ID: item.ID, Label: item.Label, Detail: item.Detail}, true
 }
 
 func (m *reviewModel) diffFile() string {
-	files := m.diffFiles()
-	if len(files) == 0 {
+	if m.tab != tabDiff {
 		return ""
 	}
-	return files[clamp(m.cursors[tabDiff], 0, len(files)-1)].Path
+	item, ok := m.screen().selectedItem()
+	if !ok {
+		return ""
+	}
+	file, ok := item.Preview.(review.FileReview)
+	if !ok {
+		return ""
+	}
+	return file.Path
 }
 
 func (m *reviewModel) selectedIntegration() (review.Integration, bool) {
-	items := m.snap.Projection.Integrations
-	if m.tab != tabIntegration || len(items) == 0 {
+	if m.tab != tabIntegration {
 		return review.Integration{}, false
 	}
-	return items[clamp(m.cursors[tabIntegration], 0, len(items)-1)], true
+	item, ok := m.screen().selectedItem()
+	if !ok {
+		return review.Integration{}, false
+	}
+	integration, ok := item.Preview.(review.Integration)
+	return integration, ok
 }
 
 func (m *reviewModel) selectedLocation() (string, int) {
@@ -381,8 +424,15 @@ func (m *reviewModel) View() tea.View {
 		return tea.NewView(uiEmptyState("Terminal is too small",
 			fmt.Sprintf("Review needs at least %dx%d; this terminal is %dx%d.", reviewMinWidth, reviewMinHeight, width, height)))
 	}
-	body := []string{uiTabs(reviewTabLabels, int(m.tab)), ""}
-	body = append(body, m.tabBody(width)...)
+	body := []string{}
+	if m.tab != tabStats {
+		body = append(body, uiTabs(reviewTabLabels, int(m.tab)), "")
+	}
+	if m.help {
+		body = append(body, uiHelpOverlay(m.hints()))
+	} else {
+		body = append(body, m.tabBody(width)...)
+	}
 	if m.status != "" {
 		body = append(body, "", uiMutedStyle.Render(m.status))
 	}
@@ -391,13 +441,21 @@ func (m *reviewModel) View() tea.View {
 		fmt.Sprintf("%s · %s", m.snap.SpecID, shortSHA(m.snap.Baseline)),
 		max(1, width-4),
 	)
-	// Sections may themselves be multi-line, so clamp the rendered lines.
-	rendered := strings.Split(strings.Join(body, "\n"), "\n")
-	return tea.NewView(uiAppShell(width, height, header,
-		strings.Join(uiClampLines(rendered, uiBodyHeight(height)), "\n"), m.footer()))
+	if m.tab == tabStats {
+		header = uiSplit("Change Summary", fmt.Sprintf("%s · %s", m.snap.SpecID, shortSHA(m.snap.Baseline)), max(1, width-4))
+	}
+	rendered := strings.Join(body, "\n")
+	anchor := ""
+	if item, ok := m.screen().selectedItem(); ok {
+		anchor = item.Label
+	}
+	rendered, m.viewport = uiViewportBody(rendered, uiWorkflowBodyHeight(height, header), m.viewport, anchor)
+	return tea.NewView(uiAppShell(width, height, header, rendered, m.footer()))
 }
 
-func (m *reviewModel) footer() string {
+func (m *reviewModel) footer() string { return uiKeyHints(m.hints(), "  ") }
+
+func (m *reviewModel) hints() [][2]string {
 	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}, {"enter", "action"}}
 	switch m.tab {
 	case tabFiles:
@@ -405,13 +463,13 @@ func (m *reviewModel) footer() string {
 	case tabIntegration:
 		hints = append(hints, [2]string{"o", "VS Code"}, [2]string{"d", "diff"})
 	case tabEvidence:
-		hints = append(hints, [2]string{"t", "run tests"}, [2]string{"d", "test diff"})
+		hints = append(hints, [2]string{"t", "run tests"}, [2]string{"d", "test diff"}, [2]string{"s", "summary"})
 	case tabDiff:
 		hints = append(hints, [2]string{"n/p", "hunk"}, [2]string{"o", "VS Code"}, [2]string{"i", "integration"})
 	case tabStats:
 		hints = append(hints, [2]string{"d", "diff"}, [2]string{"i", "integration"}, [2]string{"e", "evidence"})
 	}
-	return uiKeyHints(append(hints, [2]string{"r", "refresh"}, [2]string{"b", "back"}), "  ")
+	return append(hints, [2]string{"r", "refresh"}, [2]string{"?", "help"}, [2]string{"b", "back"}, [2]string{"q", "exit"})
 }
 
 func (m *reviewModel) tabBody(width int) []string {
@@ -476,16 +534,19 @@ func (m *reviewModel) filesBody() []string {
 	lines := []string{
 		fmt.Sprintf("  ✓ Matched %d       + Additional %d       ! Planned but untouched %d", drift.Matched, drift.Additional, drift.Untouched),
 		"",
+		fmt.Sprintf("  %-30s %-8s %-8s %s", "File", "Plan", "Actual", "Status"),
+		"  " + strings.Repeat("─", 64),
 	}
 	if m.filter != "" {
 		lines = append(lines, uiMutedStyle.Render("  Filter: "+string(m.filter)+" (f cycles)"), "")
 	}
-	files := m.filteredFiles()
-	if len(files) == 0 {
+	items := m.screen().selectableItems()
+	if len(items) == 0 {
 		return append(lines, uiEmptyState("", "No file changes match this view. Press r to refresh the actual state."))
 	}
 	selected, _ := m.selectedRow()
-	for _, file := range files {
+	for _, item := range items {
+		file := item.Preview.(review.FileReview)
 		row := fmt.Sprintf("%-30s %-8s %-8s %s %s", file.Path,
 			emptyDash(string(file.PlannedAction)), emptyDash(string(file.ActualAction)),
 			fileStatusMark(file.Status), file.Status)
@@ -507,25 +568,31 @@ func (m *reviewModel) filesBody() []string {
 }
 
 func (m *reviewModel) selectedFileStatus() review.FileStatus {
-	files := m.filteredFiles()
-	if len(files) == 0 {
+	item, ok := m.screen().selectedItem()
+	if !ok {
 		return ""
 	}
-	return files[clamp(m.cursors[tabFiles], 0, len(files)-1)].Status
+	file, ok := item.Preview.(review.FileReview)
+	if !ok {
+		return ""
+	}
+	return file.Status
 }
 
 func (m *reviewModel) integrationBody(width int) []string {
 	lines := []string{uiTitleStyle.Render("Existing code interaction"), ""}
-	if len(m.snap.Projection.Integrations) == 0 {
+	items := m.screen().selectableItems()
+	if len(items) == 0 {
 		return append(lines, uiEmptyState("", "No declared or discovered relationships are available for this change."))
 	}
 	selected, _ := m.selectedRow()
-	for index, item := range m.snap.Projection.Integrations {
+	for _, screenItem := range items {
+		item := screenItem.Preview.(review.Integration)
 		label := integrationLabel(item) + "  " + uiMutedStyle.Render(string(item.Precision))
 		if item.Path != "" {
 			label = uiSplit(label, uiMutedStyle.Render(fmt.Sprintf("%s:%d", item.Path, item.Line)), max(20, width-8))
 		}
-		if selected.ID == fmt.Sprintf("review.integration.%d", index) {
+		if selected.ID == screenItem.ID {
 			lines = append(lines, uiSelectedRow("> "+ansi.Strip(label), 0))
 		} else {
 			lines = append(lines, "  "+label)
@@ -560,27 +627,14 @@ func (m *reviewModel) evidenceBody() []string {
 	if len(m.snap.Evidence.Items) == 0 {
 		return []string{uiEmptyState("", "No evidence has been recorded. Press t to run the configured verification.")}
 	}
-	sections := []struct {
-		title    string
-		category evidence.Category
-	}{
-		{"Existing before change", evidence.CategoryExisting},
-		{"Pre-change reproduction", evidence.CategoryFailThenPass},
-		{"Added during implementation", evidence.CategoryNewTest},
-		{"Modified existing tests", evidence.CategoryModifiedExisting},
-		{"Manual claims", evidence.CategoryManual},
-	}
 	selected, _ := m.selectedRow()
 	var lines []string
-	for _, section := range sections {
-		items := evidenceItemsOf(m.snap.Evidence.Items, section.category)
-		if len(items) == 0 {
-			continue
-		}
-		lines = append(lines, uiTitleStyle.Render(section.title))
-		for _, item := range items {
+	for _, section := range m.screen().Sections {
+		lines = append(lines, uiTitleStyle.Render(section.Title))
+		for _, screenItem := range section.Items {
+			item := screenItem.Preview.(evidence.Item)
 			row := fmt.Sprintf("%s %s", evidenceMark(item), item.Name)
-			if selected.ID == "review.evidence."+item.ID {
+			if selected.ID == screenItem.ID {
 				lines = append(lines, uiSelectedRow("> "+row, 0))
 			} else {
 				lines = append(lines, "  "+row)
@@ -631,19 +685,20 @@ func (m *reviewModel) evidenceCounts() string {
 }
 
 func (m *reviewModel) diffBody(width int) []string {
-	files := m.diffFiles()
-	if len(files) == 0 {
+	items := m.screen().selectableItems()
+	if len(items) == 0 {
 		return []string{uiEmptyState("", "No diff is available. Press r to refresh the actual state.")}
 	}
-	current := clamp(m.cursors[tabDiff], 0, len(files)-1)
-	file := files[current]
+	current := clamp(m.cursors[tabDiff], 0, len(items)-1)
+	file := items[current].Preview.(review.FileReview)
 	lines := []string{uiSplit(
 		uiTitleStyle.Render("Diff · "+file.Path),
-		uiMutedStyle.Render(fmt.Sprintf("%d / %d files", current+1, len(files))),
+		uiMutedStyle.Render(fmt.Sprintf("%d / %d files", current+1, len(items))),
 		max(20, width-8)), ""}
 
-	names := make([]string, 0, len(files))
-	for index, entry := range files {
+	names := make([]string, 0, len(items))
+	for index, item := range items {
+		entry := item.Preview.(review.FileReview)
 		row := fmt.Sprintf("%s %s", fileStatusMark(entry.Status), entry.Path)
 		if index == current {
 			row = uiSelectedRow("> "+row, 0)
@@ -725,27 +780,37 @@ func (m *reviewModel) statsBody() []string {
 		fmt.Sprintf("  %-14d %-14s %-14d %s", stats.Files,
 			fmt.Sprintf("+%d -%d", stats.Additions, stats.Deletions), tests,
 			strings.ToUpper(string(m.snap.Projection.Reviewability))),
-		uiMutedStyle.Render("  Thresholds: good ≤ 6 files and ≤ 300 changed lines; moderate ≤ 12 and ≤ 800; otherwise low."),
-		"",
-		uiTitleStyle.Render("Review attention"),
+		uiMutedStyle.Render("  Thresholds: GOOD ≤ 6 files / 300 changed lines · MODERATE ≤ 12 / 800 · otherwise LOW"),
+		uiTitleStyle.Render("What changed"),
 	}
+	changed := m.changedSummaries()
+	if len(changed) == 0 {
+		lines = append(lines, uiMutedStyle.Render("  No file changes have been observed since the baseline."))
+	} else {
+		for _, summary := range changed {
+			lines = append(lines, "  • "+strings.TrimSpace(ansi.Strip(summary)))
+		}
+	}
+	lines = append(lines, uiTitleStyle.Render("Review attention"))
 	attention := m.reviewAttention()
 	if len(attention) == 0 {
 		lines = append(lines, uiMutedStyle.Render("  Nothing stands out from the recorded facts."))
 	}
 	lines = append(lines, attention...)
-	lines = append(lines, "", uiTitleStyle.Render("Evidence"), "  "+m.evidenceCounts(), "")
+	lines = append(lines, uiTitleStyle.Render("Evidence"), "  "+m.evidenceCounts())
 
 	selected, _ := m.selectedRow()
-	for _, row := range m.rows() {
-		action := "[ " + row.Label + " ]"
-		if selected.ID == row.ID {
+	actions := make([]string, 0, len(m.screen().selectableItems()))
+	for _, item := range m.screen().selectableItems() {
+		action := "[ " + item.Label + " ]"
+		if selected.ID == item.ID {
 			action = uiSelectedRow("> "+action, 0)
 		} else {
 			action = "  " + action
 		}
-		lines = append(lines, action)
+		actions = append(actions, action)
 	}
+	lines = append(lines, "", "               "+strings.Join(actions, "   "))
 	if m.decision != decisionNone {
 		lines = append(lines, uiMutedStyle.Render("  Recorded decision: "+string(m.decision)))
 	}
@@ -755,6 +820,24 @@ func (m *reviewModel) statsBody() []string {
 func (m *reviewModel) reviewAttention() []string {
 	drift := m.snap.Projection.Drift
 	var lines []string
+	if m.snap.Plan == nil {
+		lines = append(lines, "  ! No implementation plan was submitted; the plan is optional.")
+	}
+	if unreviewed := m.unreviewedCriteria(); unreviewed > 0 {
+		noun := "criterion has"
+		if unreviewed > 1 {
+			noun = "criteria have"
+		}
+		lines = append(lines, fmt.Sprintf("  ! %d acceptance %s not been reviewed", unreviewed, noun))
+	}
+	if len(m.snap.Evidence.Items) == 0 {
+		lines = append(lines, "  ! No evidence has been recorded for this change.")
+	}
+	for _, item := range m.snap.Evidence.Items {
+		if item.Automated && !item.Passing {
+			lines = append(lines, "  ! "+item.Name+" is not passing")
+		}
+	}
 	if drift.Additional > 0 {
 		lines = append(lines, fmt.Sprintf("  ! %d files changed outside the original plan", drift.Additional))
 	}
@@ -770,6 +853,16 @@ func (m *reviewModel) reviewAttention() []string {
 		lines = append(lines, "  ! review size is "+string(m.snap.Projection.Reviewability))
 	}
 	return lines
+}
+
+func (m *reviewModel) unreviewedCriteria() int {
+	unreviewed := 0
+	for _, criterion := range m.snap.Criteria {
+		if !criterion.Checked {
+			unreviewed++
+		}
+	}
+	return unreviewed
 }
 
 var findReviewContext = discovery.Find
@@ -790,6 +883,7 @@ func loadReviewSnapshot(root string) (reviewSnapshot, error) {
 		if setup, err := change.SetupFromMarkdown(string(markdown)); err == nil {
 			snapshot.Intent, snapshot.Scope = setup.Title, setup.Outcome
 		}
+		snapshot.Criteria = change.AcceptanceCriteria(string(markdown))
 	}
 	if snapshot.Plan, err = workspace.Plan(); err != nil {
 		return snapshot, err
@@ -823,6 +917,16 @@ func symbolsByPath(results []discovery.Result) map[string][]discovery.Symbol {
 		symbols[result.Path] = append(symbols[result.Path], result.Symbols...)
 	}
 	return symbols
+}
+
+func completeReviewedSpec(root string, output io.Writer) error {
+	record, err := change.Done(root, "", time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(output, "Completed %s with %d changed file(s). Archived: %s\n",
+		emptyDash(record.SpecID), record.Stats.Files, record.SpecArchive)
+	return nil
 }
 
 func recordReviewEvent(root string, event state.TimelineEvent) error {

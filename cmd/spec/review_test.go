@@ -130,7 +130,12 @@ func TestReviewTabOrderMatchesKeyboardOrderAndSelectionPersistsPerTab(t *testing
 		if int(model.tab) != index {
 			t.Fatalf("tab %d = %d", index, model.tab)
 		}
-		if plain := reviewPlain(model); !strings.Contains(plain, "["+label+"]") {
+		plain := reviewPlain(model)
+		if model.tab == tabStats {
+			if !strings.Contains(plain, "Change Summary") {
+				t.Fatalf("summary state not rendered:\n%s", plain)
+			}
+		} else if !strings.Contains(plain, "["+label+"]") {
 			t.Fatalf("active tab %q not rendered:\n%s", label, plain)
 		}
 		model.Update(key(tea.KeyTab, ""))
