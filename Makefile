@@ -1,7 +1,7 @@
 BINARY  := spec
 VERSION ?= dev
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
-GO_TAGS := -tags "grammar_subset grammar_subset_go"
+GO_TAGS := -tags "grammar_subset grammar_subset_go grammar_subset_python grammar_subset_javascript grammar_subset_typescript grammar_subset_tsx"
 TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
 .DEFAULT_GOAL := help
