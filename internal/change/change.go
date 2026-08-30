@@ -468,10 +468,12 @@ func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) 
 		return state.History{}, err
 	}
 	criteria := AcceptanceCriteria(string(current))
+	reviewedCriteria := 0
 	for _, criterion := range criteria {
 		if !criterion.Checked {
 			return state.History{}, fmt.Errorf("acceptance criteria are not fully reviewed; run `spec done`")
 		}
+		reviewedCriteria++
 	}
 	verification, err := workspace.Verification()
 	if err != nil {
@@ -501,9 +503,12 @@ func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) 
 		historyVerification = &copy
 	}
 	record := state.History{
-		Title: title, StartedAt: workspace.StartedAt, BaseSHA: workspace.BaseSHA,
+		Title: title, Intent: sectionText(string(current), "Intent"), Scope: sectionText(string(current), "Scope"),
+		StartedAt: workspace.StartedAt, BaseSHA: workspace.BaseSHA,
 		FinishedAt: now.UTC(), EndSHA: end, ChangedFiles: files,
 		Verification: historyVerification, Summary: strings.TrimSpace(summary), AIUsage: usage,
+		AcceptanceReview:       state.AcceptanceReview{Total: len(criteria), Reviewed: reviewedCriteria},
+		CompletionAcknowledged: true,
 	}
 	record, err = workspace.Finish(record, current, path)
 	if err != nil {

@@ -119,6 +119,70 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	}
 }
 
+func TestDoneCapturesHumanContractInHistory(t *testing.T) {
+	root := committedRepo(t)
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 8, 30, 4, 5, 6, 0, time.UTC)
+	setup, err := BeginSetup(root, "Disable automatic indexing", started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.Outcome = "Manual indexing remains available when automatic indexing is disabled."
+	setup.Criteria = []state.SetupCriterion{
+		{Text: "Automatic indexing remains enabled by default", Included: true},
+		{Text: "Manual indexing still works", Included: true},
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	path, err := CreateSetup(root, setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	criteria := AcceptanceCriteria(string(data))
+	for index := range criteria {
+		criteria[index].Checked = true
+	}
+	updated, err := UpdateAcceptanceCriteria(string(data), criteria)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "config.yml"), []byte("verify:\n  - 'true'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyrun.Run(root, started.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	record, err := Done(root, "reviewed by human", started.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SpecID != "SPEC-001" || record.Intent != setup.Title || record.Scope != setup.Outcome {
+		t.Fatalf("contract snapshot = %+v", record)
+	}
+	if record.AcceptanceReview.Total != 2 || record.AcceptanceReview.Reviewed != 2 || !record.CompletionAcknowledged {
+		t.Fatalf("acceptance snapshot = %+v acknowledged=%v", record.AcceptanceReview, record.CompletionAcknowledged)
+	}
+	if record.DurationSeconds != 600 {
+		t.Fatalf("duration = %d", record.DurationSeconds)
+	}
+}
+
 func TestNewRefusesExistingSpecFile(t *testing.T) {
 	root := committedRepo(t)
 	if _, err := state.Register(root); err != nil {
