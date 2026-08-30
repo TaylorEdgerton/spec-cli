@@ -54,8 +54,8 @@ func TestDefinitionAllowsEmptyScopeAndAcceptanceAndRequiresExplicitCreate(t *tes
 
 	cancelled := newDefinitionModel(state.Setup{Title: "Do not create"}, "clean")
 	updateModel(cancelled, key('q', "q"))
-	if !cancelled.done || !cancelled.cancelled || cancelled.created {
-		t.Fatalf("q result = %+v", cancelled)
+	if cancelled.done || cancelled.cancelled || cancelled.created || cancelled.nav != actionNone {
+		t.Fatalf("q directly left a non-Home screen: %+v", cancelled)
 	}
 }
 

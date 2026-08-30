@@ -101,9 +101,6 @@ func (model *definitionModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		switch keystroke {
-		case "q":
-			model.leave(actionQuit)
-			return model, tea.Quit
 		case "esc", "b":
 			model.leave(actionBack)
 			return model, tea.Quit
@@ -147,7 +144,7 @@ func (model *definitionModel) leave(action string) {
 
 func (model *definitionModel) hints() [][2]string {
 	return [][2]string{{"Tab", "field"}, {"Enter", "edit/select"}, {"Ctrl+Enter", "create"},
-		{"?", "help"}, {"b", "back"}, {"q", "cancel"}}
+		{"?", "help"}, {"b", "back"}, {"g", "home"}}
 }
 
 func (model *definitionModel) View() tea.View {
