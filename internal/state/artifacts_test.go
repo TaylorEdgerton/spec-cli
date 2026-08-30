@@ -201,6 +201,21 @@ func TestFinishSnapshotsArtifactsBeforeCleanup(t *testing.T) {
 	if err != nil || len(records) != 1 || records[0].Plan == nil || len(records[0].Evidence) != 1 {
 		t.Fatalf("history snapshot = %+v, %v", records, err)
 	}
+	// The History screen reads these fields back, so they must survive the archive.
+	stored := records[0]
+	if stored.SpecID != finished.SpecID || stored.Scope != "Scope" || stored.BaseSHA != "abc123" {
+		t.Fatalf("history identity = %+v", stored)
+	}
+	if !stored.FinishedAt.Equal(now.Add(10*time.Minute)) || stored.DurationSeconds != 600 {
+		t.Fatalf("history completion time = %+v", stored)
+	}
+	if stored.Stats.Files != 3 || stored.PlanDrift.Matched != 1 || stored.EvidenceSummary.NewTests != 1 || !containsTimelineID(stored.Timeline, "custom") {
+		t.Fatalf("history review facts = %+v", stored)
+	}
+	archived, err := os.ReadFile(filepath.Join(workspace.Dir, filepath.FromSlash(stored.SpecArchive)))
+	if err != nil || string(archived) != string(content) {
+		t.Fatalf("archived Spec = %q, %v", archived, err)
+	}
 }
 
 func TestFinishLeavesActiveArtifactsWhenSnapshotIsCorrupt(t *testing.T) {

@@ -52,7 +52,7 @@ func runHome(input io.Reader, output io.Writer, interactive bool) error {
 				return exploreErr
 			}
 		case 2:
-			if stopped, recentErr := runRecentChanges(input, output); recentErr != nil || stopped {
+			if stopped, recentErr := runRecentChanges(root, input, output); recentErr != nil || stopped {
 				return recentErr
 			}
 		case 3:
@@ -194,7 +194,7 @@ func findCodebaseContext(root, query string) ([]discovery.Result, error) {
 	return discovery.Find(root, discovery.Query{Intent: query})
 }
 
-func runRecentChanges(input io.Reader, output io.Writer) (bool, error) {
+func runRecentChanges(root string, input io.Reader, output io.Writer) (bool, error) {
 	for {
 		choice, stopped, err := runChoice(input, output, "Recent Changes", "", recentChangesMenuItems())
 		if err != nil || stopped {
@@ -203,11 +203,11 @@ func runRecentChanges(input io.Reader, output io.Writer) (bool, error) {
 		if choice == 2 {
 			return false, nil
 		}
-		title := "Spec History"
-		if choice == 1 {
-			title = "Code Changes"
+		// Both entries open the same completed-Spec history; "Code changes" simply
+		// starts with its stored file and line statistics already showing.
+		if stopped, err := runHistory(root, choice == 1, input, output); err != nil || stopped {
+			return stopped, err
 		}
-		printConsoleSection(output, title, "under development")
 	}
 }
 
