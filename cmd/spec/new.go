@@ -48,7 +48,11 @@ func runNew(args []string, input io.Reader, output io.Writer, interactive bool) 
 		printNewCreated(output, path)
 		return nil
 	}
-	return runDefinitionWorkflow(root, title, input, output)
+	if _, err := change.BeginSetup(root, title, time.Now()); err != nil {
+		return err
+	}
+	_, err = runWorkflowApp(root, screenDefinition, input, output)
+	return err
 }
 
 // runGuidedSetupLegacy remains temporarily as migration support for its

@@ -72,118 +72,27 @@ func homeMenuItems(active bool) []string {
 }
 
 func resumeActiveSpec(root string, input io.Reader, output io.Writer) error {
-	for {
-		workspace, err := state.Load(root)
-		if err != nil {
-			return err
-		}
-		if !workspace.Active {
-			return nil
-		}
-		if workspace.Setup != nil {
-			return runNew(nil, input, output, true)
-		}
-		if _, err := os.Stat(change.ActivePath(root)); os.IsNotExist(err) {
-			choice, stopped, chooseErr := runChoice(input, output, "Spec", "The active specification is missing.", []string{"Start a replacement Spec", "Exit"})
-			if chooseErr != nil || stopped || choice == 1 {
-				return chooseErr
-			}
-			return runNew(nil, input, output, true)
-		} else if err != nil {
-			return err
-		}
-		commands, err := config.VerificationCommands(root)
-		if err != nil {
-			return err
-		}
-		if len(commands) == 0 {
-			configured, err := configureReadySpec(root, input, output)
-			if err != nil || !configured {
-				return err
-			}
-			commands, err = config.VerificationCommands(root)
-			if err != nil {
-				return err
-			}
-		}
-		verification, err := workspace.Verification()
-		if err != nil {
-			return err
-		}
-		current, err := verifyrun.Current(root, verification)
-		if err != nil {
-			return err
-		}
-		freshFailure := false
-		if verification != nil && !verification.Passed && verification.Fingerprint != "" {
-			fingerprint, fingerprintErr := verifyrun.Fingerprint(root, commands)
-			freshFailure = fingerprintErr == nil && fingerprint == verification.Fingerprint
-		}
-		if freshFailure {
-			choice, stopped, err := runChoice(input, output, "Verification FAILED", "The latest failure matches the current workspace.", []string{
-				"Run verification again", "Edit Spec", "Copy failure context for AI", "Show full output", "Copy implementation prompt", "Exit",
-			})
-			if err != nil || stopped || choice == 5 {
-				return err
-			}
-			switch choice {
-			case 0:
-				if err := runVerify(root, input, output, true); err != nil {
-					return err
-				}
-				continue
-			case 1:
-				return editActiveSpec(root, input, output)
-			case 2:
-				if err := copyText(verificationFailurePrompt(*verification)); err != nil {
-					return err
-				}
-				fmt.Fprintln(output, "Failure context copied to the clipboard.")
-			case 3:
-				fmt.Fprintln(output, verification.Output)
-			case 4:
-				return offerImplementationPrompt(root, input, output)
-			}
-			continue
-		}
-		if current {
-			choice, stopped, err := runChoice(input, output, "Spec", "Verification PASS · current workspace", []string{
-				"Review and finish Spec", "Edit Spec", "Copy implementation prompt", "Run verification again", "Exit",
-			})
-			if err != nil || stopped || choice == 4 {
-				return err
-			}
-			switch choice {
-			case 0:
-				return runDone(root, nil, input, output, true)
-			case 1:
-				return editActiveSpec(root, input, output)
-			case 2:
-				return offerImplementationPrompt(root, input, output)
-			case 3:
-				if err := runVerify(root, input, output, true); err != nil {
-					return err
-				}
-				continue
-			}
-		}
-		choice, stopped, err := runChoice(input, output, "Spec", "Verification is missing or stale for the current workspace.", []string{
-			"Run verification", "Edit Spec", "Copy implementation prompt", "Exit",
-		})
-		if err != nil || stopped || choice == 3 {
-			return err
-		}
-		if choice == 0 {
-			if err := runVerify(root, input, output, true); err != nil {
-				return err
-			}
-			continue
-		}
-		if choice == 1 {
-			return editActiveSpec(root, input, output)
-		}
-		return offerImplementationPrompt(root, input, output)
+	workspace, err := state.Load(root)
+	if err != nil {
+		return err
 	}
+	if !workspace.Active {
+		return nil
+	}
+	if workspace.Setup != nil {
+		return runNew(nil, input, output, true)
+	}
+	if _, err := os.Stat(change.ActivePath(root)); os.IsNotExist(err) {
+		choice, stopped, chooseErr := runChoice(input, output, "Spec", "The active specification is missing.", []string{"Start a replacement Spec", "Exit"})
+		if chooseErr != nil || stopped || choice == 1 {
+			return chooseErr
+		}
+		return runNew(nil, input, output, true)
+	} else if err != nil {
+		return err
+	}
+	_, err = runShell(root, screenOverview, input, output)
+	return err
 }
 
 func runExploreCodebase(root string, input io.Reader, output io.Writer) (bool, error) {
@@ -205,8 +114,9 @@ func runRecentChanges(root string, input io.Reader, output io.Writer) (bool, err
 		}
 		// Both entries open the same completed-Spec history; "Code changes" simply
 		// starts with its stored file and line statistics already showing.
-		if stopped, err := runHistory(root, choice == 1, input, output); err != nil || stopped {
-			return stopped, err
+		action, err := runHistory(root, choice == 1, input, output)
+		if err != nil || action == actionQuit {
+			return action == actionQuit, err
 		}
 	}
 }
@@ -247,11 +157,13 @@ func createDocumentMenuItems() []string {
 	return []string{"README", "Runbook", "Back"}
 }
 
-func editActiveSpec(root string, input io.Reader, output io.Writer) error {
-	if _, err := change.BeginEdit(root); err != nil {
+func editDefinition(root string) error {
+	workspace, err := state.Load(root)
+	if err != nil || !workspace.Active || workspace.Setup != nil {
 		return err
 	}
-	return runNew(nil, input, output, true)
+	_, err = change.BeginEdit(root)
+	return err
 }
 
 func configureReadySpec(root string, input io.Reader, output io.Writer) (bool, error) {
