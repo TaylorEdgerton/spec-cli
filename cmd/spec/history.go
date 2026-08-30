@@ -133,7 +133,7 @@ func (m *historyModel) key(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		m.leave(actionBack)
 		return tea.Quit
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		m.leave(actionQuit)
 		return tea.Quit
 	}
@@ -147,14 +147,14 @@ func (m *historyModel) leave(action string) {
 
 func (m *historyModel) hints() [][2]string {
 	if m.spec != "" {
-		return [][2]string{{"esc", "close Spec"}, {"?", "help"}, {"q", "exit"}}
+		return [][2]string{{"esc", "close Spec"}, {"?", "help"}, {"g", "home"}}
 	}
 	if m.searching {
 		return [][2]string{{"type", "search"}, {"enter", "keep"}, {"esc", "clear"}}
 	}
 	return [][2]string{
 		{"↑/↓", "select"}, {"enter", "open Spec"}, {"/", "search"},
-		{"s", "stats"}, {"t", "timeline"}, {"?", "help"}, {"b", "back"}, {"q", "exit"},
+		{"s", "stats"}, {"t", "timeline"}, {"?", "help"}, {"b", "back"}, {"g", "home"},
 	}
 }
 
