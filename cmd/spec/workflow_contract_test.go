@@ -85,34 +85,95 @@ func TestContextReviewShowsDiscoveryProvenanceAndExplicitContinuation(t *testing
 	}
 }
 
-func TestPlanCapturePastePreviewEditSkipAndAcceptAreReachable(t *testing.T) {
+func TestPlanCaptureStartsWithChoiceAndClipboardPreviewPersistsOnlyOnAccept(t *testing.T) {
 	raw := "```spec-plan\n" + validPlanJSON + "\n```"
 	model := newPlanCaptureModel("")
-	model.Update(tea.PasteMsg{Content: raw})
-	model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModCtrl}))
-	if model.mode != planCapturePreview || model.plan.Summary == "" {
-		t.Fatalf("paste was not validated into preview: %+v", model)
+	if model.mode != planCaptureChoice || strings.Contains(ansi.Strip(model.View().Content), "Paste one response containing") {
+		t.Fatalf("plan capture did not start at the guided choice: %+v\n%s", model, ansi.Strip(model.View().Content))
 	}
 	plain := ansi.Strip(model.View().Content)
-	for _, expected := range []string{"Plan preview", "Accept", "Edit", "Skip", "config/config.go"} {
+	for _, expected := range []string{"copy plan prompt", "Import plan from clipboard", "Wait for `spec plan submit --stdin`", "Skip plan for this change", "never required"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("plan choice missing %q:\n%s", expected, plain)
+		}
+	}
+	model.readClipboard = func() (string, error) { return raw, nil }
+	model.Update(key(tea.KeyEnter, ""))
+	if model.mode != planCaptureClipboardPreview || model.plan.Summary == "" || model.decision != "" {
+		t.Fatalf("clipboard was not validated without persistence: %+v", model)
+	}
+	plain = ansi.Strip(model.View().Content)
+	for _, expected := range []string{"spec-plan detected", "Accept Plan", "Paste different response", "Inspect/Edit", "Skip", "config/config.go"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("plan capture missing %q:\n%s", expected, plain)
 		}
 	}
-	model.cursor = 1
+	model.cursor = 2
 	model.Update(key(tea.KeyEnter, ""))
 	if model.decision != planEdit || model.mode != planCapturePaste {
 		t.Fatalf("edit result = %+v", model)
 	}
-	model.mode, model.cursor = planCapturePreview, 2
+	model.mode, model.cursor = planCaptureClipboardPreview, 3
 	model.Update(key(tea.KeyEnter, ""))
 	if model.decision != planSkip {
 		t.Fatalf("skip decision = %q", model.decision)
 	}
-	model.mode, model.cursor, model.decision = planCapturePreview, 0, ""
+	model.mode, model.cursor, model.decision = planCaptureClipboardPreview, 0, ""
 	model.Update(key(tea.KeyEnter, ""))
 	if model.decision != planAccept {
 		t.Fatalf("accept decision = %q", model.decision)
+	}
+}
+
+func TestPlanCaptureClipboardErrorFallsBackToManualPaste(t *testing.T) {
+	model := newPlanCaptureModel("")
+	model.readClipboard = func() (string, error) { return "not a plan", nil }
+	model.Update(key(tea.KeyEnter, ""))
+	if model.mode != planCaptureClipboardError || !strings.Contains(model.status, "no fenced spec-plan") {
+		t.Fatalf("invalid clipboard state = %+v", model)
+	}
+	if strings.Contains(ansi.Strip(model.View().Content), "Ctrl+Enter preview") {
+		t.Fatal("manual editor was shown before the explicit fallback action")
+	}
+	model.Update(key(tea.KeyEnter, ""))
+	if model.mode != planCapturePaste {
+		t.Fatalf("manual paste fallback not opened: %+v", model)
+	}
+}
+
+func TestPlanCaptureCLIWaitRefreshFindsPersistedValidatedPlan(t *testing.T) {
+	model := newPlanCaptureModel("")
+	model.cursor = 1
+	model.reloadPlan = func() (*state.StoredChangePlan, error) { return nil, nil }
+	model.Update(key(tea.KeyEnter, ""))
+	if model.mode != planCaptureCLIWait || !strings.Contains(ansi.Strip(model.View().Content), "spec plan submit --stdin") {
+		t.Fatalf("CLI wait state = %+v\n%s", model, ansi.Strip(model.View().Content))
+	}
+	plan, err := validateChangePlan([]byte(validPlanJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.reloadPlan = func() (*state.StoredChangePlan, error) {
+		return &state.StoredChangePlan{Source: state.PlanSourceCLI, Plan: plan}, nil
+	}
+	model.Update(key('r', "r"))
+	if model.mode != planCaptureClipboardPreview || !model.acceptedPersisted || model.plan.Summary == "" {
+		t.Fatalf("CLI refresh did not load persisted plan: %+v", model)
+	}
+}
+
+func TestPlanCaptureCopiesPlanPromptInPlaceAndReportsFailureHonestly(t *testing.T) {
+	model := newPlanCaptureModel("")
+	copied := 0
+	model.copyPlanPrompt = func() error { copied++; return nil }
+	model.Update(key('p', "p"))
+	if copied != 1 || model.mode != planCaptureChoice || model.nav != actionNone || !strings.Contains(model.status, "copied") {
+		t.Fatalf("copy action state=%+v copied=%d", model, copied)
+	}
+	model.copyPlanPrompt = func() error { return fmt.Errorf("no clipboard") }
+	model.Update(key('p', "p"))
+	if !strings.Contains(model.status, "Clipboard unavailable") || strings.Contains(model.status, "copied") {
+		t.Fatalf("failed copy status=%q", model.status)
 	}
 }
 
@@ -292,7 +353,7 @@ func TestPersistentWorkflowCanSkipAPlanWithoutPersistingOne(t *testing.T) {
 	app.Update(tea.PasteMsg{Content: raw})
 	app.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModCtrl}))
 	capture := app.active.(*planCaptureModel)
-	capture.cursor = 2
+	capture.cursor = 3
 	app.Update(key(tea.KeyEnter, ""))
 	if app.screen != screenOverview {
 		t.Fatalf("skip returned to %q, want Overview", app.screen)

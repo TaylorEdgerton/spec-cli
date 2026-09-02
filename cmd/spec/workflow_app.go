@@ -273,10 +273,12 @@ func (app *workflowApp) navigate(action string) tea.Cmd {
 		if capture.decision != planAccept {
 			return nil
 		}
-		if _, err := saveAcceptedPlan(app.root, capture.plan, state.PlanSourcePaste, "human paste", time.Now()); err != nil {
-			capture.status = err.Error()
-			capture.nav = actionNone
-			return nil
+		if !capture.acceptedPersisted {
+			if _, err := saveAcceptedPlan(app.root, capture.plan, state.PlanSourcePaste, "human paste", time.Now()); err != nil {
+				capture.status = err.Error()
+				capture.nav = actionNone
+				return nil
+			}
 		}
 	}
 	if action == actionComplete {
@@ -397,7 +399,16 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 				}
 			}
 		}
-		model = newPlanCaptureModel(raw)
+		capture := newPlanCaptureModel(raw)
+		capture.copyPlanPrompt = func() error { return copyPlanningPrompt(app.root) }
+		capture.reloadPlan = func() (*state.StoredChangePlan, error) {
+			workspace, err := state.Load(app.root)
+			if err != nil {
+				return nil, err
+			}
+			return workspace.Plan()
+		}
+		model = capture
 	case shellScreen(actionContextReview):
 		model = newContextReviewModel(app.context)
 	default:
