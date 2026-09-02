@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
@@ -44,6 +45,7 @@ func TestValidatePlanNormalizesAndRejectsInvalidActionsAndPaths(t *testing.T) {
 		`{"summary":"x","files":[{"path":"../outside","action":"modify"}]}`,
 		`{"summary":"x","files":[{"path":"x.go","action":"move"}]}`,
 		`{"summary":"x","files":[{"path":"/tmp/x.go","action":"modify"}]}`,
+		`{"summary":"x","files":[{"path":"config\\config.go","action":"modify"},{"path":"config/config.go","action":"modify"}]}`,
 	} {
 		if _, err := validateChangePlan([]byte(invalid)); err == nil {
 			t.Fatalf("invalid plan accepted: %s", invalid)
@@ -54,6 +56,52 @@ func TestValidatePlanNormalizesAndRejectsInvalidActionsAndPaths(t *testing.T) {
 		if !strings.Contains(preview, expected) {
 			t.Fatalf("preview missing %q: %s", expected, preview)
 		}
+	}
+}
+
+func TestCLIWaitReloadsPlanWrittenByPlanSubmitWithoutResavingIt(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	setup := *workspace.Setup
+	setup.Title = "CLI wait"
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saveDefinitionContract(root, setup, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, shellScreen(actionPlanCapture))
+	capture := app.active.(*planCaptureModel)
+	capture.cursor = 1
+	app.Update(key(tea.KeyEnter, ""))
+	if capture.mode != planCaptureCLIWait {
+		t.Fatalf("mode=%v", capture.mode)
+	}
+	now := time.Date(2026, 8, 31, 3, 4, 5, 0, time.UTC)
+	if err := runPlanCommand(root, []string{"submit", "--stdin"}, strings.NewReader(validPlanJSON), &bytes.Buffer{}, now); err != nil {
+		t.Fatal(err)
+	}
+	app.Update(key('r', "r"))
+	capture = app.active.(*planCaptureModel)
+	if capture.mode != planCaptureClipboardPreview || !capture.acceptedPersisted || capture.plan.Files[0].Path != "config/config.go" {
+		t.Fatalf("refreshed capture=%+v", capture)
+	}
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenPlan {
+		t.Fatalf("accepted CLI plan routed to %q", app.screen)
+	}
+	events, err := workspace.TimelineEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	for _, event := range events {
+		if event.Type == state.TimelinePlanAccepted {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("CLI plan was accepted %d times; want one durable acceptance", accepted)
 	}
 }
 
