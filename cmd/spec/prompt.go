@@ -2,17 +2,43 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 
 	promptbuilder "github.com/TaylorEdgerton/spec-cli/internal/prompt"
+	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
 func cmdPrompt(args []string) error {
+	root, err := currentRoot()
+	if err != nil {
+		return err
+	}
+	return runPromptCommand(root, args, os.Stdout, os.Stderr, promptCommandServices{
+		Record: func(kind promptbuilder.Kind, event state.TimelineEventType, source string) {
+			recordPromptDelivery(root, event, kind, source)
+		},
+	})
+}
+
+type promptCommandServices struct {
+	Build  func(string, bool, promptbuilder.Kind) (string, promptbuilder.Info, error)
+	Copy   func(string) error
+	Record func(promptbuilder.Kind, state.TimelineEventType, string)
+}
+
+func runPromptCommand(root string, args []string, output, errorOutput io.Writer, services promptCommandServices) error {
 	copyOutput, showInfo, includeFiles := false, false, false
+	kind := promptbuilder.Implementation
+	seen := make(map[string]bool)
 	for _, arg := range args {
+		if seen[arg] {
+			return promptUsageError()
+		}
+		seen[arg] = true
 		switch arg {
 		case "--copy":
 			copyOutput = true
@@ -20,31 +46,49 @@ func cmdPrompt(args []string) error {
 			showInfo = true
 		case "--include-files":
 			includeFiles = true
+		case "--plan":
+			kind = promptbuilder.Plan
 		default:
-			return fmt.Errorf("usage: spec prompt [--copy] [--info] [--include-files]")
+			return promptUsageError()
 		}
 	}
-	root, err := currentRoot()
-	if err != nil {
-		return err
+	if services.Build == nil {
+		services.Build = promptbuilder.BuildKind
 	}
-	content, info, err := promptbuilder.Build(root, includeFiles)
+	if services.Copy == nil {
+		services.Copy = copyText
+	}
+	content, info, err := services.Build(root, includeFiles, kind)
 	if err != nil {
 		return err
 	}
 	if copyOutput {
-		if err := copyText(content); err != nil {
+		if err := services.Copy(content); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stderr, "Prompt copied to the clipboard.")
+		label := "Implementation"
+		if kind == promptbuilder.Plan {
+			label = "Plan"
+		}
+		fmt.Fprintf(errorOutput, "%s prompt copied to the clipboard.\n", label)
+		if services.Record != nil {
+			services.Record(kind, state.TimelinePromptCopied, "clipboard")
+		}
 	} else {
-		fmt.Print(content)
+		fmt.Fprint(output, content)
+		if services.Record != nil {
+			services.Record(kind, state.TimelinePromptPrinted, "stdout")
+		}
 	}
 	if showInfo {
-		fmt.Fprintln(os.Stderr, "\nPrompt context:")
-		fmt.Fprintln(os.Stderr, promptbuilder.FormatInfo(info))
+		fmt.Fprintln(errorOutput, "\nPrompt context:")
+		fmt.Fprintln(errorOutput, promptbuilder.FormatInfo(info))
 	}
 	return nil
+}
+
+func promptUsageError() error {
+	return fmt.Errorf("usage: spec prompt [--plan] [--copy] [--info] [--include-files]")
 }
 
 func copyText(content string) error {
@@ -110,4 +154,37 @@ func runClipboardTool(path string, args []string, content string) error {
 		return fmt.Errorf("%w: %s", err, detail)
 	}
 	return err
+}
+
+func readClipboardText() (string, error) {
+	var tools []clipboardTool
+	switch runtime.GOOS {
+	case "darwin":
+		tools = []clipboardTool{{name: "pbpaste"}}
+	case "windows":
+		tools = []clipboardTool{{name: "powershell.exe", args: []string{"-NoProfile", "-Command", "Get-Clipboard -Raw"}}}
+	default:
+		tools = []clipboardTool{
+			{name: "wl-paste", args: []string{"--no-newline"}},
+			{name: "xclip", args: []string{"-selection", "clipboard", "-o"}},
+			{name: "xsel", args: []string{"--clipboard", "--output"}},
+			{name: "termux-clipboard-get"},
+		}
+	}
+	var failures []string
+	for _, tool := range tools {
+		path, err := exec.LookPath(tool.name)
+		if err != nil {
+			continue
+		}
+		output, err := exec.Command(path, tool.args...).CombinedOutput()
+		if err == nil {
+			return string(output), nil
+		}
+		failures = append(failures, tool.name+": "+err.Error())
+	}
+	if len(failures) > 0 {
+		return "", fmt.Errorf("clipboard read failed: %s", strings.Join(failures, "; "))
+	}
+	return "", fmt.Errorf("no clipboard read tool is available")
 }

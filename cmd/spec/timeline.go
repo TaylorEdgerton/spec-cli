@@ -75,6 +75,9 @@ func timelineDetail(details state.TimelineDetails) string {
 	if details.Count > 0 {
 		parts = append(parts, fmt.Sprintf("%d items", details.Count))
 	}
+	if details.PromptKind != "" {
+		parts = append(parts, details.PromptKind+" prompt")
+	}
 	return strings.Join(parts, " · ")
 }
 

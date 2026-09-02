@@ -1,11 +1,77 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	promptbuilder "github.com/TaylorEdgerton/spec-cli/internal/prompt"
+	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
+
+func TestPromptCommandSupportsPlanModeAndBackwardCompatibleImplementationMode(t *testing.T) {
+	tests := []struct {
+		args []string
+		kind promptbuilder.Kind
+	}{
+		{args: nil, kind: promptbuilder.Implementation},
+		{args: []string{"--plan"}, kind: promptbuilder.Plan},
+		{args: []string{"--plan", "--include-files", "--info"}, kind: promptbuilder.Plan},
+	}
+	for _, test := range tests {
+		var stdout, stderr bytes.Buffer
+		var gotKind promptbuilder.Kind
+		err := runPromptCommand("/repo", test.args, &stdout, &stderr, promptCommandServices{
+			Build: func(_ string, _ bool, kind promptbuilder.Kind) (string, promptbuilder.Info, error) {
+				gotKind = kind
+				return "PROMPT", promptbuilder.Info{ApproxTokens: 2}, nil
+			},
+			Copy: func(string) error { return nil },
+		})
+		if err != nil || gotKind != test.kind {
+			t.Fatalf("args=%v kind=%q err=%v", test.args, gotKind, err)
+		}
+	}
+}
+
+func TestPromptCommandValidatesOptionsAndCopyDelivery(t *testing.T) {
+	build := func(_ string, _ bool, _ promptbuilder.Kind) (string, promptbuilder.Info, error) {
+		return "PROMPT", promptbuilder.Info{}, nil
+	}
+	for _, args := range [][]string{{"--wat"}, {"--plan", "--plan"}, {"--copy", "--copy"}} {
+		err := runPromptCommand("/repo", args, &bytes.Buffer{}, &bytes.Buffer{}, promptCommandServices{Build: build})
+		if err == nil || !strings.Contains(err.Error(), "usage: spec prompt") || !strings.Contains(err.Error(), "--plan") {
+			t.Fatalf("args=%v usage error=%v", args, err)
+		}
+	}
+	var copied string
+	var stdout, stderr bytes.Buffer
+	err := runPromptCommand("/repo", []string{"--plan", "--copy", "--info"}, &stdout, &stderr, promptCommandServices{
+		Build: build,
+		Copy:  func(content string) error { copied = content; return nil },
+	})
+	if err != nil || copied != "PROMPT" || stdout.Len() != 0 || !strings.Contains(stderr.String(), "Plan prompt copied") || !strings.Contains(stderr.String(), "Prompt context") {
+		t.Fatalf("copied=%q stdout=%q stderr=%q err=%v", copied, stdout.String(), stderr.String(), err)
+	}
+}
+
+func TestPromptCommandDoesNotRecordClipboardSuccessWhenCopyFails(t *testing.T) {
+	called := false
+	err := runPromptCommand("/repo", []string{"--plan", "--copy"}, &bytes.Buffer{}, &bytes.Buffer{}, promptCommandServices{
+		Build: func(_ string, _ bool, _ promptbuilder.Kind) (string, promptbuilder.Info, error) {
+			return "PROMPT", promptbuilder.Info{}, nil
+		},
+		Copy: func(string) error { return errors.New("clipboard unavailable") },
+		Record: func(promptbuilder.Kind, state.TimelineEventType, string) {
+			called = true
+		},
+	})
+	if err == nil || called {
+		t.Fatalf("failed clipboard delivery err=%v recorded=%v", err, called)
+	}
+}
 
 func TestCopyTextFallsBackToWindowsClipboardInWSL(t *testing.T) {
 	lookedUp := []string{}
