@@ -162,6 +162,14 @@ func TestCompleteDefinitionCapturesBaselineWritesContractAndAutoCopiesPrompt(t *
 	if loaded.BaseSHA == "" || !loaded.StartedAt.Equal(started) || loaded.GitState != "dirty" || loaded.Setup != nil {
 		t.Fatalf("creation metadata = %+v", loaded.Metadata)
 	}
+	events, err := loaded.TimelineEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != state.TimelinePromptCopied || last.Source != "clipboard" || last.Details.PromptKind != "implementation" {
+		t.Fatalf("prompt delivery event = %+v", last)
+	}
 }
 
 func TestCompleteDefinitionPrintsUsableFallbackWhenClipboardFails(t *testing.T) {
@@ -186,6 +194,18 @@ func TestCompleteDefinitionPrintsUsableFallbackWhenClipboardFails(t *testing.T) 
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("fallback missing %q: %s", expected, output.String())
 		}
+	}
+	loaded, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := loaded.TimelineEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != state.TimelinePromptPrinted || last.Source != "stdout" || last.Details.PromptKind != "implementation" {
+		t.Fatalf("fallback delivery event = %+v", last)
 	}
 }
 

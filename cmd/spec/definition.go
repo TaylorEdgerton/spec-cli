@@ -306,18 +306,18 @@ func deliverDefinitionPrompt(root string, output io.Writer, services definitionS
 	}
 	if err := services.CopyPrompt(prompt); err == nil {
 		fmt.Fprintln(output, "Implementation prompt copied to the clipboard.")
-		recordPromptDelivery(root, state.TimelinePromptCopied)
+		recordPromptDelivery(root, state.TimelinePromptCopied, promptbuilder.Implementation, "clipboard")
 		return nil
 	} else {
 		fmt.Fprintf(output, "Clipboard unavailable: %v\n", err)
 		fmt.Fprintln(output, "Print/copy fallback (retry with `spec prompt --copy`):")
 		fmt.Fprintln(output, prompt)
-		recordPromptDelivery(root, state.TimelinePromptPrinted)
+		recordPromptDelivery(root, state.TimelinePromptPrinted, promptbuilder.Implementation, "stdout")
 		return nil
 	}
 }
 
-func recordPromptDelivery(root string, eventType state.TimelineEventType) {
+func recordPromptDelivery(root string, eventType state.TimelineEventType, kind promptbuilder.Kind, source string) {
 	workspace, err := state.Load(root)
 	if err != nil {
 		return
@@ -328,8 +328,8 @@ func recordPromptDelivery(root string, eventType state.TimelineEventType) {
 		ID:            fmt.Sprintf("%s:prompt:%d", workspace.SpecID, now.UnixNano()),
 		Type:          eventType,
 		Actor:         "spec",
-		Source:        "clipboard",
+		Source:        source,
 		OccurredAt:    now,
-		Details:       state.TimelineDetails{SpecID: workspace.SpecID},
+		Details:       state.TimelineDetails{SpecID: workspace.SpecID, PromptKind: string(kind)},
 	})
 }
