@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,13 @@ type Info struct {
 	ApproxTokens   int
 }
 
+type Kind string
+
+const (
+	Implementation Kind = "implementation"
+	Plan           Kind = "plan"
+)
+
 type contextFile struct {
 	path       string
 	reasons    []string
@@ -43,6 +51,13 @@ type contextFile struct {
 var findContext = discovery.Find
 
 func Build(root string, includeFiles bool) (string, Info, error) {
+	return BuildKind(root, includeFiles, Implementation)
+}
+
+func BuildKind(root string, includeFiles bool, kind Kind) (string, Info, error) {
+	if kind != Implementation && kind != Plan {
+		return "", Info{}, fmt.Errorf("unknown prompt kind %q", kind)
+	}
 	workspace, err := state.Load(root)
 	if err != nil {
 		return "", Info{}, err
@@ -88,18 +103,12 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 		}
 		builder.WriteByte('\n')
 	}
-	builder.WriteString("Discovery context below is advisory and may be absent.\n")
-	builder.WriteString("Plan the change and return one fenced `spec-plan` JSON block using this provider-neutral schema:\n\n")
-	builder.WriteString("```spec-plan\n")
-	builder.WriteString("{\n")
-	builder.WriteString("  \"summary\": \"short implementation summary\",\n")
-	builder.WriteString("  \"files\": [{\"path\": \"repository/relative/path\", \"action\": \"modify\", \"reason\": \"why\"}],\n")
-	builder.WriteString("  \"integration_points\": [{\"existing_symbol\": \"symbol\", \"planned_change\": \"change\", \"relationship\": \"relationship\"}],\n")
-	builder.WriteString("  \"verification\": [{\"behaviour\": \"expected behaviour\", \"likely_location\": \"optional path\"}],\n")
-	builder.WriteString("  \"uncertainties\": [\"open question\"]\n")
-	builder.WriteString("}\n")
-	builder.WriteString("```\n\n")
-	builder.WriteString("Allowed file actions are `create`, `modify`, and `delete`. The plan is required by default; continue implementation if prompted not to plan.\n\n")
+	builder.WriteString("Discovery context below is advisory and may be absent.\n\n")
+	if kind == Plan {
+		writePlanInstructions(&builder)
+	} else if err := writeImplementationInstructions(&builder, workspace); err != nil {
+		return "", Info{}, err
+	}
 	info := Info{}
 	files := promptFiles(root, current)
 
@@ -239,6 +248,50 @@ func Build(root string, includeFiles bool) (string, Info, error) {
 		return "", Info{}, err
 	}
 	return result, info, nil
+}
+
+const changePlanExample = `{
+  "summary": "short implementation summary",
+  "files": [{"path": "repository/relative/path", "action": "modify", "reason": "why"}],
+  "integration_points": [{"existing_symbol": "symbol", "planned_change": "change", "relationship": "relationship"}],
+  "verification": [{"behaviour": "expected behaviour", "likely_location": "optional path"}],
+  "uncertainties": ["open question"]
+}`
+
+func writePlanInstructions(builder *strings.Builder) {
+	builder.WriteString("## Planning task\n\n")
+	builder.WriteString("Your task is to investigate the repository and propose the smallest implementation plan that satisfies the change contract. Do not implement the change or modify repository files.\n")
+	builder.WriteString("Allowed file actions are `create`, `modify`, and `delete`. Use repository-relative paths and identify existing integration relationships and verification behaviours.\n\n")
+	builder.WriteString("If you can run terminal commands, submit the plan directly with this safe stdin form:\n\n")
+	builder.WriteString("spec plan submit --stdin <<'SPEC_PLAN'\n")
+	builder.WriteString(changePlanExample)
+	builder.WriteString("\nSPEC_PLAN\n\n")
+	builder.WriteString("If you cannot run that command, return exactly one fenced `spec-plan` JSON block and no second plan block:\n\n")
+	builder.WriteString("```spec-plan\n")
+	builder.WriteString(changePlanExample)
+	builder.WriteString("\n```\n\n")
+	builder.WriteString("Stop after the plan is submitted or returned. Wait for human approval before implementation.\n")
+}
+
+func writeImplementationInstructions(builder *strings.Builder, workspace state.Workspace) error {
+	builder.WriteString("## Implementation task\n\n")
+	stored, err := workspace.Plan()
+	if err != nil {
+		return err
+	}
+	if stored == nil {
+		builder.WriteString("No accepted ChangePlan is present; implement the change directly from the change contract and repository evidence. Planning is optional, so do not manufacture or claim an accepted plan.\n\n")
+		return nil
+	}
+	canonical, err := json.MarshalIndent(stored.Plan, "", "  ")
+	if err != nil {
+		return err
+	}
+	builder.WriteString("Use the accepted plan below as implementation guidance. Reconcile it with the current repository and surface necessary plan drift.\n\n")
+	builder.WriteString("## Accepted ChangePlan\n\n```json\n")
+	builder.Write(canonical)
+	builder.WriteString("\n```\n\n")
+	return nil
 }
 
 func promptFiles(root, markdown string) []contextFile {

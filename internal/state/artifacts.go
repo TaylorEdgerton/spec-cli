@@ -68,6 +68,7 @@ type TimelineDetails struct {
 	Title       string `json:"title,omitempty"`
 	BaselineSHA string `json:"baseline_sha,omitempty"`
 	Summary     string `json:"summary,omitempty"`
+	PromptKind  string `json:"prompt_kind,omitempty"`
 	Count       int    `json:"count,omitempty"`
 }
 

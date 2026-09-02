@@ -14,23 +14,74 @@ import (
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
-func TestBuildIncludesChangeContractAndOptionalPlanInstructions(t *testing.T) {
+func TestBuildPlanAndImplementationPromptsHaveDistinctContracts(t *testing.T) {
 	root := promptRepository(t, state.Setup{
 		Title: "Disable automatic indexing", Outcome: "Manual indexing remains available",
 		Criteria: []state.SetupCriterion{{Text: "Automatic indexing remains enabled by default", Included: true}},
 	})
-	content, _, err := Build(root, false)
+	planPrompt, _, err := BuildKind(root, false, Plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
 		"Disable automatic indexing", "Manual indexing remains available", "Automatic indexing remains enabled by default",
 		"```spec-plan", `"summary"`, `"files"`, `"integration_points"`, `"verification"`, `"uncertainties"`,
-		"optional", "advisory",
+		"spec plan submit --stdin", "<<'SPEC_PLAN'", "investigate", "Do not implement", "advisory",
 	} {
-		if !strings.Contains(content, expected) {
-			t.Fatalf("prompt missing %q:\n%s", expected, content)
+		if !strings.Contains(planPrompt, expected) {
+			t.Fatalf("plan prompt missing %q:\n%s", expected, planPrompt)
 		}
+	}
+	if strings.Count(planPrompt, "```spec-plan") != 1 {
+		t.Fatalf("plan prompt must contain exactly one fenced fallback:\n%s", planPrompt)
+	}
+
+	implementationPrompt, _, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"The plan is required", "```spec-plan", "Do not implement"} {
+		if strings.Contains(implementationPrompt, forbidden) {
+			t.Fatalf("implementation prompt contains planning-only instruction %q:\n%s", forbidden, implementationPrompt)
+		}
+	}
+	if !strings.Contains(implementationPrompt, "No accepted ChangePlan is present") || !strings.Contains(implementationPrompt, "implement") {
+		t.Fatalf("implementation prompt lacks direct no-plan instruction:\n%s", implementationPrompt)
+	}
+}
+
+func TestImplementationPromptIncludesAcceptedPlanWithoutManufacturingOne(t *testing.T) {
+	root := promptRepository(t, state.Setup{Title: "Disable automatic indexing"})
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 31, 1, 2, 3, 0, time.UTC)
+	accepted := state.StoredChangePlan{
+		SchemaVersion: state.ArtifactSchemaVersion,
+		Source:        state.PlanSourceCLI,
+		Submitter:     "agent",
+		SubmittedAt:   now,
+		AcceptedAt:    now,
+		Plan: state.ChangePlan{
+			Summary: "Respect the indexing setting",
+			Files:   []state.PlannedFile{{Path: "indexer/indexer.go", Action: state.PlanFileModify, Reason: "guard automatic indexing"}},
+		},
+	}
+	if err := workspace.SavePlan(accepted); err != nil {
+		t.Fatal(err)
+	}
+	content, _, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"## Accepted ChangePlan", "Respect the indexing setting", "indexer/indexer.go", "guard automatic indexing"} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("implementation prompt missing %q:\n%s", expected, content)
+		}
+	}
+	if strings.Contains(content, "No accepted ChangePlan is present") || strings.Contains(content, "```spec-plan") {
+		t.Fatalf("implementation prompt manufactured plan-capture instructions:\n%s", content)
 	}
 }
 
