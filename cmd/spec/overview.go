@@ -419,7 +419,18 @@ func copyImplementationPrompt(root string) error {
 	if err := copyText(content); err != nil {
 		return err
 	}
-	recordPromptDelivery(root, state.TimelinePromptCopied)
+	recordPromptDelivery(root, state.TimelinePromptCopied, promptbuilder.Implementation, "clipboard")
+	return nil
+}
+func copyPlanningPrompt(root string) error {
+	content, _, err := promptbuilder.BuildKind(root, false, promptbuilder.Plan)
+	if err != nil {
+		return err
+	}
+	if err := copyText(content); err != nil {
+		return err
+	}
+	recordPromptDelivery(root, state.TimelinePromptCopied, promptbuilder.Plan, "clipboard")
 	return nil
 }
 func emptyAs(v, f string) string {
