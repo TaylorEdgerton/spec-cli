@@ -145,6 +145,23 @@ func TestHistoryStatsToggleAndSelectedSummaryShowStoredFacts(t *testing.T) {
 	}
 }
 
+func TestHistoryWrapsScopeAndCompletionSummaryWithoutChangingSelection(t *testing.T) {
+	records := historyFixture()
+	records[1].Scope = "Preserve the existing command behaviour while making the selected history details readable across narrow terminals."
+	records[1].Summary = "The implementation completed the intended change and retained enough evidence for a future maintainer to understand the outcome."
+	model := newHistoryFixtureModel(t, records, false)
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	plain := historyPlain(model)
+	for _, expected := range []string{"Preserve the existing command", "Completion summary", "implementation completed"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("History detail missing %q:\n%s", expected, plain)
+		}
+	}
+	if model.cursor != 0 || len(model.screen().selectableItemIDs()) != len(records) {
+		t.Fatalf("prose rendering changed History selection: cursor=%d ids=%v", model.cursor, model.screen().selectableItemIDs())
+	}
+}
+
 func TestHistoryOpensTheArchivedSpecReadOnly(t *testing.T) {
 	model := newHistoryFixtureModel(t, historyFixture(), false)
 	archive := filepath.Join(model.dir, "specs", "one.md")

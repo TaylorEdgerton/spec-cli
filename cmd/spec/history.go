@@ -198,7 +198,7 @@ func (m *historyModel) View() tea.View {
 		return tea.NewView(uiEmptyState("Terminal is too small",
 			fmt.Sprintf("Spec history needs at least %dx%d; this terminal is %dx%d.", reviewMinWidth, reviewMinHeight, width, height)))
 	}
-	body := m.body()
+	body := m.body(max(20, width-8))
 	if m.status != "" {
 		body = append(body, "", uiMutedStyle.Render(m.status))
 	}
@@ -221,12 +221,12 @@ func (m *historyModel) View() tea.View {
 
 func (m *historyModel) footer() string { return uiKeyHints(m.hints(), "  ") }
 
-func (m *historyModel) body() []string {
+func (m *historyModel) body(width int) []string {
 	if m.help {
-		return []string{uiHelpOverlay(m.hints())}
+		return []string{uiHelpOverlayWidth(m.hints(), width)}
 	}
 	if m.spec != "" {
-		return append([]string{uiTitleStyle.Render("Archived Spec (read-only)"), ""}, strings.Split(m.spec, "\n")...)
+		return []string{uiTitleStyle.Render("Archived Spec (read-only)"), "", uiProse(m.spec, width)}
 	}
 	if m.timeline {
 		record, ok := m.selected()
@@ -263,9 +263,12 @@ func (m *historyModel) body() []string {
 		}
 	}
 	record := items[cursor].Preview.(state.History)
-	lines = append(lines, "", uiTitleStyle.Render("Selected"), "  "+record.Title)
+	lines = append(lines, "", uiTitleStyle.Render("Selected"), uiIndentedProse(record.Title, width, 2))
 	if strings.TrimSpace(record.Scope) != "" {
-		lines = append(lines, "  Scope: "+record.Scope)
+		lines = append(lines, uiMutedStyle.Render("  Scope"), uiIndentedProse(record.Scope, width, 2))
+	}
+	if strings.TrimSpace(record.Summary) != "" {
+		lines = append(lines, uiTitleStyle.Render("Completion summary"), uiIndentedProse(record.Summary, width, 2))
 	}
 	lines = append(lines, fmt.Sprintf("  Baseline %s  ·  archive %s",
 		emptyDash(shortSHA(record.BaseSHA)), emptyDash(record.SpecArchive)))
