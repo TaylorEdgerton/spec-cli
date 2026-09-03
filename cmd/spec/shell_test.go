@@ -227,12 +227,12 @@ func TestReviewDecisionsAreExplicitAndSurviveUnresolvedFacts(t *testing.T) {
 	model := newReviewModel(t.TempDir(), snapshot)
 	model.record = func(string, state.TimelineEvent) error { return nil }
 	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
-	model.tab = tabStats
+	model.tab = tabSummary
 	plain := reviewPlain(model)
 	for _, expected := range []string{
 		"No implementation plan was submitted",
 		"1 acceptance criterion has not been reviewed",
-		"was recorded against a different worktree",
+		"recorded against a different worktree",
 		"Manual 1",
 	} {
 		if !strings.Contains(plain, expected) {
@@ -243,7 +243,7 @@ func TestReviewDecisionsAreExplicitAndSurviveUnresolvedFacts(t *testing.T) {
 	if model.nav != actionNone || model.decision != decisionNone {
 		t.Fatalf("opening the summary decided %q/%q", model.nav, model.decision)
 	}
-	model.cursors[tabStats] = 0
+	setReviewCursorByID(t, model, "review.complete")
 	model.Update(key(tea.KeyEnter, ""))
 	if model.decision != decisionComplete || model.nav != actionComplete {
 		t.Fatalf("complete = %q/%q", model.decision, model.nav)
@@ -251,8 +251,8 @@ func TestReviewDecisionsAreExplicitAndSurviveUnresolvedFacts(t *testing.T) {
 
 	changes := newReviewModel(t.TempDir(), snapshot)
 	changes.record = func(string, state.TimelineEvent) error { return nil }
-	changes.tab = tabStats
-	changes.cursors[tabStats] = 1
+	changes.tab = tabSummary
+	setReviewCursorByID(t, changes, "review.request_changes")
 	changes.Update(key(tea.KeyEnter, ""))
 	if changes.decision != decisionChanges || changes.nav != actionChanges {
 		t.Fatalf("request changes = %q/%q", changes.decision, changes.nav)

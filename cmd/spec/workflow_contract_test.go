@@ -32,7 +32,7 @@ func TestWorkflowScreensExposeCanonicalVisualAndNavigationOrder(t *testing.T) {
 		t.Fatalf("plan canonical order = %v, want %v", got, want)
 	}
 	reviewModel := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
-	reviewModel.tab = tabFiles
+	reviewModel.tab = tabChanges
 	if got := reviewModel.screen().selectableItemIDs(); len(got) == 0 || !strings.HasPrefix(got[0], "review.file.") {
 		t.Fatalf("review canonical rows = %v", got)
 	}
@@ -364,16 +364,16 @@ func TestPersistentWorkflowCanSkipAPlanWithoutPersistingOne(t *testing.T) {
 	}
 }
 
-func TestChangeSummaryIsASeparateExplicitDecisionState(t *testing.T) {
+func TestChangeSummaryIsTheFirstReviewViewAndExplicitDecisionState(t *testing.T) {
 	model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
-	model.tab = tabStats
+	model.tab = tabSummary
 	plain := ansi.Strip(model.View().Content)
-	if !strings.Contains(plain, "Change Summary") || !strings.Contains(plain, "Complete Spec") || !strings.Contains(plain, "Request Changes") {
+	if !strings.Contains(plain, "Review · Summary") || !strings.Contains(plain, "Complete Spec") || !strings.Contains(plain, "Request Changes") {
 		t.Fatalf("summary contract missing:\n%s", plain)
 	}
 	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	plain = ansi.Strip(model.View().Content)
-	assertTextOrder(t, plain, "Files", "Lines", "Tests", "Reviewability", "What changed", "Review attention", "Evidence", "Complete Spec", "Request Changes")
+	assertTextOrder(t, plain, "Original intent", "Implementation plan", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
 	if !sameRenderedLine(plain, "Complete Spec", "Request Changes") {
 		t.Fatalf("summary decisions are not presented together:\n%s", plain)
 	}
@@ -427,7 +427,7 @@ func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(
 	}
 	app.Update(workflowNavigateMsg{Action: actionReview})
 	reviewed, ok := app.active.(*reviewModel)
-	if !ok || app.screen != screenReview || reviewed.snap.Projection.Stats.Files == 0 {
+	if !ok || app.screen != screenReview || reviewed.tab != tabSummary || reviewed.snap.Projection.Stats.Files == 0 {
 		t.Fatalf("explicit review refresh = screen:%q model:%T", app.screen, app.active)
 	}
 	app.Update(workflowNavigateMsg{Action: actionBack})
@@ -443,7 +443,7 @@ func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(
 		t.Fatalf("evidence to summary = %q", app.screen)
 	}
 	summary := app.active.(*reviewModel)
-	summary.cursors[tabStats] = 1
+	setReviewCursorByID(t, summary, "review.request_changes")
 	app.Update(key(tea.KeyEnter, ""))
 	if app.screen != screenOverview {
 		t.Fatalf("Request Changes returned to %q", app.screen)
@@ -451,6 +451,7 @@ func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(
 
 	app.Update(workflowNavigateMsg{Action: actionReview})
 	app.Update(workflowNavigateMsg{Action: actionSummary})
+	setReviewCursorByID(t, app.active.(*reviewModel), "review.complete")
 	app.Update(key(tea.KeyEnter, ""))
 	if app.screen != screenHistory {
 		t.Fatalf("Complete Spec opened %q", app.screen)
@@ -478,11 +479,11 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 			return newOverviewModel(overviewData{Title: "Disable automatic indexing", SpecID: "SPEC-014", Branch: "main", Baseline: reviewBaseline, Intent: "Disable automatic indexing", Scope: "Preserve manual indexing", StartedAt: time.Now().Add(-12 * time.Minute), Now: time.Now(), Facts: overviewFacts{BaselineReady: true}})
 		}, []string{"SPEC-014", "main", "Intent", "NEXT", "Change lifecycle", "Since baseline"}},
 		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"Implementation Plan", "Summary", "Planned files", "Existing integration points", "enter inspect"}},
-		{"review-files", func() contractModel {
+		{"review-changes", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
-			model.tab = tabFiles
+			model.tab = tabChanges
 			return model
-		}, []string{"Review · Files", "[Files]", "Matched", "Additional", "config/config.go"}},
+		}, []string{"Review · Changes", "[Changes]", "Matched", "Additional", "config/config.go"}},
 		{"integration", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabIntegration
@@ -495,9 +496,9 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 		}, []string{"Review · Evidence", "TestAutoIndexCanBeDisabled", "baseline", "run tests"}},
 		{"summary", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
-			model.tab = tabStats
+			model.tab = tabSummary
 			return model
-		}, []string{"Change Summary", "Files", "Lines", "Tests", "Reviewability", "What changed", "Review attention", "Evidence", "Complete Spec", "Request Changes"}},
+		}, []string{"Review · Summary", "[Summary]", "Original intent", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Review attention", "Evidence", "Complete Spec", "Request Changes"}},
 		{"diff", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabDiff

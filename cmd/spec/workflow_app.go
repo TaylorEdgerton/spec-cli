@@ -363,7 +363,7 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 			app.reviewed = &snapshot
 		}
 		reviewModel := newReviewModel(app.root, *app.reviewed)
-		reviewModel.tab = tabStats
+		reviewModel.tab = tabSummary
 		model = reviewModel
 	case screenHistory:
 		dir, records, err := loadHistory(app.root)
