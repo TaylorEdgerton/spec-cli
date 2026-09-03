@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/evidence"
@@ -22,8 +23,9 @@ import (
 
 // The supported window floor from the screen
 const (
-	reviewMinWidth  = 80
-	reviewMinHeight = 16
+	reviewMinWidth   = 80
+	reviewMinHeight  = 16
+	reviewSplitWidth = 92 // 120-column shell minus the persistent 24-column rail.
 )
 
 type reviewTab int
@@ -111,8 +113,24 @@ func (m *reviewModel) screen() canonicalScreen {
 	sections := make([]screenSection, 0, 1)
 	switch m.tab {
 	case tabChanges:
-		for _, file := range m.filteredFiles() {
-			items = append(items, screenItem{ID: "review.file." + file.Path, Label: file.Path, Detail: file.Reason, Selectable: true, Preview: file})
+		files := m.filteredFiles()
+		for _, group := range []struct {
+			id, title string
+			status    review.FileStatus
+		}{
+			{"matched", "Matched", review.StatusMatched},
+			{"additional", "Additional", review.StatusAdditional},
+			{"untouched", "Planned but untouched", review.StatusUntouched},
+		} {
+			groupItems := make([]screenItem, 0)
+			for _, file := range files {
+				if file.Status == group.status {
+					groupItems = append(groupItems, screenItem{ID: "review.file." + file.Path, Label: file.Path, Detail: file.Reason, Selectable: true, Preview: file})
+				}
+			}
+			if len(groupItems) > 0 {
+				sections = append(sections, screenSection{ID: "review.changes." + group.id, Title: fmt.Sprintf("%s (%d)", group.title, len(groupItems)), Items: groupItems})
+			}
 		}
 	case tabIntegration:
 		for index, item := range m.snap.Projection.Integrations {
@@ -191,7 +209,7 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 	case "d":
 		m.showDiff()
 	case "i":
-		m.selectTab(tabIntegration)
+		m.showIntegration()
 	case "e":
 		m.selectTab(tabEvidence)
 	case "o":
@@ -257,21 +275,55 @@ func (m *reviewModel) cycleFilter() {
 }
 
 func (m *reviewModel) showDiff() {
+	path, contextual := "", false
 	if m.tab == tabChanges {
+		contextual = true
 		if row, ok := m.selectedRow(); ok {
-			m.selectDiffFile(strings.TrimPrefix(row.ID, "review.file."))
+			path = strings.TrimPrefix(row.ID, "review.file.")
 		}
+	} else if m.tab == tabIntegration {
+		contextual = true
+		if item, ok := m.selectedIntegration(); ok && item.Path != "" {
+			path = item.Path
+		}
+	}
+	if contextual && path == "" {
+		m.status = "This relationship has no changed file with an actual diff."
+		return
+	}
+	if contextual && !m.selectDiffFile(path) {
+		m.status = "No actual diff is available for " + path + "."
+		return
 	}
 	m.selectTab(tabDiff)
 }
 
-func (m *reviewModel) selectDiffFile(path string) {
+func (m *reviewModel) showIntegration() {
+	if m.tab != tabDiff {
+		m.selectTab(tabIntegration)
+		return
+	}
+	path := m.diffFile()
+	if path != "" {
+		for index, item := range m.snap.Projection.Integrations {
+			if item.Path == path {
+				m.cursors[tabIntegration] = index
+				m.selectTab(tabIntegration)
+				return
+			}
+		}
+	}
+	m.status = "No integration relationship is attributed to " + emptyAs(path, "this file") + "."
+}
+
+func (m *reviewModel) selectDiffFile(path string) bool {
 	for index, file := range m.diffFiles() {
 		if file.Path == path {
 			m.cursors[tabDiff] = index
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (m *reviewModel) openSelected() {
@@ -467,7 +519,7 @@ func (m *reviewModel) View() tea.View {
 		body = append(body, m.tabBody(width)...)
 	}
 	if m.status != "" {
-		body = append(body, "", uiMutedStyle.Render(m.status))
+		body = append(body, uiMutedStyle.Render(m.status))
 	}
 	header := uiSplit(
 		fmt.Sprintf("Review · %s", reviewTabLabels[m.tab]),
@@ -505,7 +557,7 @@ func (m *reviewModel) hints() [][2]string {
 func (m *reviewModel) tabBody(width int) []string {
 	switch m.tab {
 	case tabChanges:
-		return m.filesBody()
+		return m.filesBody(width)
 	case tabIntegration:
 		return m.integrationBody(width)
 	case tabEvidence:
@@ -518,79 +570,205 @@ func (m *reviewModel) tabBody(width int) []string {
 	return nil
 }
 
-func (m *reviewModel) filesBody() []string {
-	drift := m.snap.Projection.Drift
-	lines := []string{
-		fmt.Sprintf("  ✓ Matched %d       + Additional %d       ! Planned but untouched %d", drift.Matched, drift.Additional, drift.Untouched),
-		"",
-		fmt.Sprintf("  %-30s %-8s %-8s %s", "File", "Plan", "Actual", "Status"),
-		"  " + strings.Repeat("─", 64),
-	}
-	if m.filter != "" {
-		lines = append(lines, uiMutedStyle.Render("  Filter: "+string(m.filter)+" (f cycles)"), "")
-	}
+func (m *reviewModel) filesBody(width int) []string {
 	items := m.screen().selectableItems()
 	if len(items) == 0 {
-		return append(lines, uiEmptyState("", "No file changes match this view. Press r to refresh the actual state."))
+		return []string{uiEmptyState("", "No file changes match this view. Press r to refresh the actual state.")}
 	}
-	selected, _ := m.selectedRow()
-	for _, item := range items {
-		file := item.Preview.(review.FileReview)
-		row := fmt.Sprintf("%-30s %-8s %-8s %s %s", file.Path,
-			emptyDash(string(file.PlannedAction)), emptyDash(string(file.ActualAction)),
-			fileStatusMark(file.Status), file.Status)
-		if selected.ID == "review.file."+file.Path {
+	contentWidth := max(20, width-4)
+	selected := items[clamp(m.cursors[tabChanges], 0, len(items)-1)].Preview.(review.FileReview)
+	filter := ""
+	if m.filter != "" {
+		filter = uiMutedStyle.Render("Filter: "+string(m.filter)+" (f cycles)") + "\n"
+	}
+	if width >= reviewSplitWidth {
+		leftWidth := max(36, contentWidth*2/5)
+		rightWidth := max(24, contentWidth-leftWidth)
+		leftBody := filter + m.changeList(leftWidth-4, false)
+		rightBody := m.changeDetail(selected, rightWidth-4, false)
+		height := max(lipgloss.Height(leftBody), lipgloss.Height(rightBody)) + 2
+		body := lipgloss.JoinHorizontal(lipgloss.Top,
+			uiPanel(leftWidth, height, uiBorder, "Files", "", leftBody),
+			uiPanel(rightWidth, height, uiYellow, "Change detail", "", rightBody),
+		)
+		return strings.Split(body, "\n")
+	}
+	listBody := filter + m.changeList(contentWidth-4, true)
+	detailBody := m.changeDetail(selected, contentWidth-4, true)
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		uiPanel(contentWidth, lipgloss.Height(listBody)+2, uiBorder, "Files", "", listBody),
+		uiPanel(contentWidth, lipgloss.Height(detailBody)+2, uiYellow, "Selected change", "", detailBody),
+	)
+	return strings.Split(body, "\n")
+}
+
+func (m *reviewModel) changeList(width int, compact bool) string {
+	selectedID := ""
+	if item, ok := m.screen().selectedItem(); ok {
+		selectedID = item.ID
+	}
+	if compact {
+		matched, additional, untouched := 0, 0, 0
+		for _, file := range m.snap.Projection.Files {
+			switch file.Status {
+			case review.StatusMatched:
+				matched++
+			case review.StatusAdditional:
+				additional++
+			case review.StatusUntouched:
+				untouched++
+			}
+		}
+		lines := []string{fmt.Sprintf("Matched %d · Additional %d · Planned but untouched %d", matched, additional, untouched)}
+		if item, ok := m.screen().selectedItem(); ok {
+			file := item.Preview.(review.FileReview)
+			lines = append(lines, uiSelectedRow("> "+fileStatusMark(file.Status)+" "+ansi.Truncate(file.Path, max(8, width-4), "…"), 0))
+		}
+		return strings.Join(lines, "\n")
+	}
+	var lines []string
+	for _, section := range m.screen().Sections {
+		lines = append(lines, uiTitleStyle.Render(section.Title))
+		for _, item := range section.Items {
+			file := item.Preview.(review.FileReview)
+			row := fileStatusMark(file.Status) + " " + ansi.Truncate(file.Path, max(8, width-4), "…")
+			if item.ID == selectedID {
+				row = uiSelectedRow("> "+row, 0)
+			} else {
+				row = "  " + row
+			}
+			lines = append(lines, row)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *reviewModel) changeDetail(file review.FileReview, width int, compact bool) string {
+	lines := strings.Split(uiProse(file.Path, width), "\n")
+	lineStats := "—"
+	if file.Change != nil {
+		lineStats = fmt.Sprintf("+%d -%d", file.Change.Additions, file.Change.Deletions)
+	}
+	if compact {
+		lines = append(lines, fmt.Sprintf("Plan %s · Actual %s · Lines %s · %s",
+			emptyDash(string(file.PlannedAction)), emptyDash(string(file.ActualAction)), lineStats, file.Status))
+		if file.Reason != "" {
+			lines = append(lines, uiLabelledProse("Reason", file.Reason, width))
+		}
+		symbols := m.changedSymbols(file.Path)
+		symbolText := "not attributed"
+		if len(symbols) > 0 {
+			symbolText = strings.Join(symbols, ", ")
+		}
+		lines = append(lines, uiLabelledProse("Changed symbols", symbolText, width), "[ View diff ]   [ Open VS Code ]")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines,
+		fmt.Sprintf("Planned  %s", emptyDash(string(file.PlannedAction))),
+		fmt.Sprintf("Actual   %s", emptyDash(string(file.ActualAction))),
+	)
+	lines = append(lines, "Lines    "+lineStats)
+	lines = append(lines, uiMutedStyle.Render(fileStatusLabel(file.Status)))
+	if file.Reason != "" {
+		lines = append(lines, uiTitleStyle.Render("Reason"), uiProse(file.Reason, width))
+	}
+	symbols := m.changedSymbols(file.Path)
+	lines = append(lines, uiTitleStyle.Render("Changed symbols"))
+	if len(symbols) == 0 {
+		lines = append(lines, uiMutedStyle.Render("No symbol attribution is available."))
+	} else {
+		for _, symbol := range symbols {
+			lines = append(lines, "  "+symbol)
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, "[ View diff ]   [ Open VS Code ]")
+	return strings.Join(lines, "\n")
+}
+
+func (m *reviewModel) changedSymbols(path string) []string {
+	seen := map[string]bool{}
+	var symbols []string
+	for _, hunk := range m.snap.Hunks[path] {
+		if symbol := strings.TrimSpace(hunk.Symbol); symbol != "" && !seen[symbol] {
+			seen[symbol] = true
+			symbols = append(symbols, symbol)
+		}
+	}
+	return symbols
+}
+
+func (m *reviewModel) integrationBody(width int) []string {
+	items := m.screen().selectableItems()
+	if len(items) == 0 {
+		return []string{uiEmptyState("", "No declared or discovered relationships are available for this change.")}
+	}
+	contentWidth := max(20, width-4)
+	selected, _ := m.selectedIntegration()
+	if width >= reviewSplitWidth {
+		leftWidth := max(38, contentWidth*2/5)
+		rightWidth := max(24, contentWidth-leftWidth)
+		leftBody := m.integrationList(leftWidth-4, false)
+		rightBody := m.integrationDetail(selected, rightWidth-4, false)
+		height := max(lipgloss.Height(leftBody), lipgloss.Height(rightBody)) + 2
+		body := lipgloss.JoinHorizontal(lipgloss.Top,
+			uiPanel(leftWidth, height, uiBorder, "Existing-code boundaries", "", leftBody),
+			uiPanel(rightWidth, height, uiYellow, "Code / relationship detail", integrationProvenance(selected), rightBody),
+		)
+		return strings.Split(body, "\n")
+	}
+	listBody := m.integrationList(contentWidth-4, true)
+	detailBody := m.integrationDetail(selected, contentWidth-4, true)
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		uiPanel(contentWidth, lipgloss.Height(listBody)+2, uiBorder, "Existing-code boundaries", "", listBody),
+		uiPanel(contentWidth, lipgloss.Height(detailBody)+2, uiYellow, "Code / relationship detail", integrationProvenance(selected), detailBody),
+	)
+	return strings.Split(body, "\n")
+}
+
+func (m *reviewModel) integrationList(width int, compact bool) string {
+	selectedID := ""
+	if item, ok := m.screen().selectedItem(); ok {
+		selectedID = item.ID
+	}
+	var lines []string
+	for _, screenItem := range m.screen().selectableItems() {
+		if compact && screenItem.ID != selectedID {
+			continue
+		}
+		item := screenItem.Preview.(review.Integration)
+		row := ansi.Truncate(integrationLabel(item), max(8, width-4), "…")
+		if screenItem.ID == selectedID {
 			row = uiSelectedRow("> "+row, 0)
 		} else {
 			row = "  " + row
 		}
-		lines = append(lines, row)
-	}
-	if row, ok := m.selectedRow(); ok {
-		lines = append(lines, "", uiTitleStyle.Render("Selected"), "  "+row.Label,
-			uiMutedStyle.Render("  "+fileStatusLabel(m.selectedFileStatus())))
-		if row.Detail != "" {
-			lines = append(lines, "  "+row.Detail)
+		lines = append(lines, row, uiMutedStyle.Render("    "+integrationProvenance(item)))
+		if item.Path != "" && !compact {
+			lines = append(lines, uiMutedStyle.Render(fmt.Sprintf("    %s:%d", item.Path, item.Line)))
 		}
 	}
-	return lines
+	return strings.Join(lines, "\n")
 }
 
-func (m *reviewModel) selectedFileStatus() review.FileStatus {
-	item, ok := m.screen().selectedItem()
-	if !ok {
-		return ""
-	}
-	file, ok := item.Preview.(review.FileReview)
-	if !ok {
-		return ""
-	}
-	return file.Status
-}
-
-func (m *reviewModel) integrationBody(width int) []string {
-	lines := []string{uiTitleStyle.Render("Existing code interaction"), ""}
-	items := m.screen().selectableItems()
-	if len(items) == 0 {
-		return append(lines, uiEmptyState("", "No declared or discovered relationships are available for this change."))
-	}
-	selected, _ := m.selectedRow()
-	for _, screenItem := range items {
-		item := screenItem.Preview.(review.Integration)
-		label := integrationLabel(item) + "  " + uiMutedStyle.Render(string(item.Precision))
-		if item.Path != "" {
-			label = uiSplit(label, uiMutedStyle.Render(fmt.Sprintf("%s:%d", item.Path, item.Line)), max(20, width-8))
-		}
-		if selected.ID == screenItem.ID {
-			lines = append(lines, uiSelectedRow("> "+ansi.Strip(label), 0))
-		} else {
-			lines = append(lines, "  "+label)
-		}
+func (m *reviewModel) integrationDetail(item review.Integration, width int, compact bool) string {
+	lines := strings.Split(uiProse(integrationLabel(item), width), "\n")
+	lines = append(lines, "Provenance  "+integrationProvenance(item))
+	if item.Path == "" {
+		lines = append(lines, uiMutedStyle.Render("Location    AI-declared; no source location was supplied."))
+	} else {
+		lines = append(lines, fmt.Sprintf("Location    %s:%d", item.Path, item.Line))
 		if item.Change != "" {
-			lines = append(lines, uiMutedStyle.Render("    └─ "+item.Change))
+			lines = append(lines, "Actual      "+item.Change)
 		}
 	}
-	return append(append(lines, "", uiTitleStyle.Render("Preview")), m.integrationPreview(width)...)
+	if !compact {
+		lines = append(lines, "")
+	}
+	lines = append(lines, uiTitleStyle.Render("Code Preview"))
+	lines = append(lines, m.integrationPreview(width)...)
+	lines = append(lines, "[ View diff ]   [ Open VS Code ]")
+	return strings.Join(lines, "\n")
 }
 
 func (m *reviewModel) integrationPreview(width int) []string {
@@ -680,26 +858,55 @@ func (m *reviewModel) diffBody(width int) []string {
 	}
 	current := clamp(m.cursors[tabDiff], 0, len(items)-1)
 	file := items[current].Preview.(review.FileReview)
-	lines := []string{uiSplit(
-		uiTitleStyle.Render("Diff · "+file.Path),
-		uiMutedStyle.Render(fmt.Sprintf("%d / %d files", current+1, len(items))),
-		max(20, width-8)), ""}
+	contentWidth := max(20, width-4)
+	if width >= reviewSplitWidth {
+		leftWidth := max(34, contentWidth*2/5)
+		rightWidth := max(24, contentWidth-leftWidth)
+		leftBody := m.diffFileList(items, current, leftWidth-4, false)
+		rightBody := m.diffDetail(file, rightWidth-4, false)
+		height := max(lipgloss.Height(leftBody), lipgloss.Height(rightBody)) + 2
+		body := lipgloss.JoinHorizontal(lipgloss.Top,
+			uiPanel(leftWidth, height, uiBorder, "Files", fmt.Sprintf("%d / %d files", current+1, len(items)), leftBody),
+			uiPanel(rightWidth, height, uiYellow, "Focused hunk", "", rightBody),
+		)
+		return strings.Split(body, "\n")
+	}
+	leftBody := m.diffFileList(items, current, contentWidth-4, true)
+	rightBody := m.diffDetail(file, contentWidth-4, true)
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		uiPanel(contentWidth, lipgloss.Height(leftBody)+2, uiBorder, "Files", fmt.Sprintf("%d / %d files", current+1, len(items)), leftBody),
+		uiPanel(contentWidth, lipgloss.Height(rightBody)+2, uiYellow, "Focused hunk", "", rightBody),
+	)
+	return strings.Split(body, "\n")
+}
 
-	names := make([]string, 0, len(items))
+func (m *reviewModel) diffFileList(items []screenItem, current, width int, compact bool) string {
+	var lines []string
 	for index, item := range items {
+		if compact && index != current {
+			continue
+		}
 		entry := item.Preview.(review.FileReview)
-		row := fmt.Sprintf("%s %s", fileStatusMark(entry.Status), entry.Path)
+		row := fileStatusMark(entry.Status) + " " + ansi.Truncate(entry.Path, max(8, width-4), "…")
 		if index == current {
 			row = uiSelectedRow("> "+row, 0)
 		} else {
 			row = "  " + row
 		}
-		names = append(names, row)
+		lines = append(lines, row)
 	}
+	return strings.Join(lines, "\n")
+}
 
-	paneWidth := max(24, width/2-6)
-	lines = append(lines, uiColumns(strings.Join(names, "\n"), max(20, width/3), strings.Join(m.hunkLines(file, paneWidth), "\n")))
-	return append(append(lines, ""), m.diffAnnotations(file)...)
+func (m *reviewModel) diffDetail(file review.FileReview, width int, compact bool) string {
+	lines := []string{ansi.Truncate(file.Path, width, "…")}
+	lines = append(lines, m.hunkLines(file, width)...)
+	if !compact {
+		lines = append(lines, "")
+	}
+	lines = append(lines, m.diffAnnotations(file)...)
+	lines = append(lines, "[ Open VS Code ]   [ Integration ]")
+	return strings.Join(lines, "\n")
 }
 
 func (m *reviewModel) hunkLines(file review.FileReview, width int) []string {
@@ -741,10 +948,17 @@ func (m *reviewModel) diffAnnotations(file review.FileReview) []string {
 		integrated = "yes"
 	}
 	return []string{
-		"  Existing symbol: " + emptyAs(symbol, "not attributed"),
-		"  Planned: " + planned,
-		"  Integration changed: " + integrated,
+		"Symbol               " + emptyAs(symbol, "not attributed"),
+		"Planned              " + yesMark(planned),
+		"Integration changed  " + yesMark(integrated),
 	}
+}
+
+func yesMark(value string) string {
+	if value == "yes" {
+		return "✓"
+	}
+	return "—"
 }
 
 func (m *reviewModel) integrationTouches(path, symbol string) bool {
@@ -1023,13 +1237,29 @@ func evidenceMark(item evidence.Item) string {
 }
 
 func integrationLabel(item review.Integration) string {
-	label := item.Symbol
-	if item.Parent != "" {
-		label = item.Parent + " → " + item.Relationship + " " + item.Symbol
-	} else if item.Relationship != "" {
-		label += " · " + item.Relationship
+	source, target := item.Parent, item.Symbol
+	if source == "" {
+		source, target = item.Symbol, item.Change
 	}
-	return label
+	parts := make([]string, 0, 3)
+	for _, part := range []string{source, item.Relationship, target} {
+		if strings.TrimSpace(part) != "" {
+			parts = append(parts, strings.TrimSpace(part))
+		}
+	}
+	return strings.Join(parts, " → ")
+}
+
+func integrationProvenance(item review.Integration) string {
+	switch item.Precision {
+	case review.PrecisionPrecise:
+		return "precise · compiler-backed"
+	case review.PrecisionStructural:
+		return "structural · parser-derived"
+	case review.PrecisionPlanned:
+		return "planned · AI-declared"
+	}
+	return string(item.Precision)
 }
 
 func fileStatusLabel(status review.FileStatus) string {
@@ -1050,8 +1280,10 @@ func fileStatusMark(status review.FileStatus) string {
 		return "✓"
 	case review.StatusAdditional:
 		return "+"
+	case review.StatusUntouched:
+		return "–"
 	}
-	return "!"
+	return "•"
 }
 
 func emptyDash(value string) string {

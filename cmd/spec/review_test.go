@@ -124,6 +124,15 @@ func newReviewFixtureModel(t *testing.T, plan *state.StoredChangePlan) *reviewMo
 
 func reviewPlain(model *reviewModel) string { return ansi.Strip(model.View().Content) }
 
+func samePlainLine(text, left, right string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, left) && strings.Contains(line, right) {
+			return true
+		}
+	}
+	return false
+}
+
 func setReviewCursorByID(t *testing.T, model *reviewModel, id string) {
 	t.Helper()
 	for index, item := range model.screen().selectableItems() {
@@ -308,9 +317,9 @@ func TestReviewTabsRenderTheirOwnContract(t *testing.T) {
 	}{
 		{tabSummary, []string{"Add an option to disable automatic indexing", "Disable automatic indexing", "Actual change", "Review attention", "Evidence"}},
 		{tabChanges, []string{"Matched", "Additional", "untouched", "config/config.go", "cmd/spec/config.go", "old_indexer.go"}},
-		{tabIntegration, []string{"Existing code interaction", "ensureIndex", "Config.AutoIndexEnabled", "precise", "structural", "planned"}},
+		{tabIntegration, []string{"Existing-code boundaries", "ensureIndex", "precise", "structural", "planned"}},
 		{tabEvidence, []string{"TestAutoIndexCanBeDisabled", "TestConfigAutoIndexFalse", "baseline", "manual", "stale"}},
-		{tabDiff, []string{"indexer/indexer.go", "files", "Existing symbol"}},
+		{tabDiff, []string{"indexer/indexer.go", "files", "Focused hunk", "Symbol"}},
 	}
 	for _, test := range tests {
 		t.Run(reviewTabLabels[test.tab], func(t *testing.T) {
@@ -396,7 +405,7 @@ func TestReviewFilesTabCountsSelectsAndHandsOffToDiff(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
 	model.tab = tabChanges
 	plain := reviewPlain(model)
-	for _, expected := range []string{"Matched 2", "Additional 2", "untouched 1", "planned and changed", "config/config.go", "add AutoIndexEnabled"} {
+	for _, expected := range []string{"Matched (2)", "Additional (2)", "Planned but untouched (1)", "planned and changed", "config/config.go", "add AutoIndexEnabled"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("files tab missing %q:\n%s", expected, plain)
 		}
@@ -430,6 +439,67 @@ func TestReviewFilesTabCountsSelectsAndHandsOffToDiff(t *testing.T) {
 	}
 }
 
+func TestReviewChangesGroupsFilesAndShowsCompleteSelectedDetail(t *testing.T) {
+	snapshot := reviewSnapshotFixture(reviewPlanFixture())
+	longPath := "internal/presentation/components/review_change_detail_renderer.go"
+	snapshot.Projection.Files[0].Path = longPath
+	snapshot.Projection.Files[0].Change.Path = longPath
+	snapshot.Hunks[longPath] = snapshot.Hunks["config/config.go"]
+	delete(snapshot.Hunks, "config/config.go")
+	model := newReviewModel(t.TempDir(), snapshot)
+	model.tab = tabChanges
+	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	plain := reviewPlain(model)
+	assertTextOrder(t, plain, "Matched (2)", "Additional (2)", "Planned but untouched (1)")
+	for _, expected := range []string{
+		"Change detail", longPath, "Planned", "modify", "Actual", "modified", "Lines", "+12 -2",
+		"Reason", "add AutoIndexEnabled", "Changed symbols", "Config", "[ View diff ]", "[ Open VS Code ]",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Changes detail missing %q:\n%s", expected, plain)
+		}
+	}
+	if strings.Count(plain, longPath) != 1 {
+		t.Fatalf("long path should be truncated in the list and complete only in detail:\n%s", plain)
+	}
+	if strings.Contains(plain, "File                           Plan") {
+		t.Fatalf("Changes retained the wide status table:\n%s", plain)
+	}
+}
+
+func TestReviewChangesUsesWideSplitAndNarrowStackWithoutChangingCanonicalSelection(t *testing.T) {
+	model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+	model.tab = tabChanges
+	model.cursors[tabChanges] = 0
+	wantIDs := append([]string(nil), model.screen().selectableItemIDs()...)
+	for _, test := range []struct {
+		width, height int
+		labels        []string
+		split         bool
+	}{
+		{120, 34, []string{"Files", "Change detail"}, true},
+		{96, 34, []string{"Files", "Change detail"}, true},
+		{80, 24, []string{"Files", "Selected change", "Changed symbols", "[ View diff ]", "[ Open VS Code ]"}, false},
+	} {
+		model.Update(tea.WindowSizeMsg{Width: test.width, Height: test.height})
+		plain := reviewPlain(model)
+		for _, label := range test.labels {
+			if !strings.Contains(plain, label) {
+				t.Fatalf("Changes at %dx%d missing %q:\n%s", test.width, test.height, label, plain)
+			}
+		}
+		if got := model.screen().selectableItemIDs(); !reflect.DeepEqual(got, wantIDs) || model.cursors[tabChanges] != 0 {
+			t.Fatalf("resize changed canonical items or selection: ids=%v cursor=%d", got, model.cursors[tabChanges])
+		}
+		if test.split && !samePlainLine(plain, "Files", "Change detail") {
+			t.Fatalf("Changes did not retain split panes at shell content width %d:\n%s", test.width, plain)
+		}
+		if lipgloss.Width(model.View().Content) > test.width || lipgloss.Height(model.View().Content) > test.height {
+			t.Fatalf("Changes exceeded %dx%d", test.width, test.height)
+		}
+	}
+}
+
 func TestReviewIntegrationTabLabelsPrecisionPreviewsAndHandsOff(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
 	model.tab = tabIntegration
@@ -439,7 +509,7 @@ func TestReviewIntegrationTabLabelsPrecisionPreviewsAndHandsOff(t *testing.T) {
 		return errors.New("code is unavailable")
 	}
 	plain := reviewPlain(model)
-	for _, expected := range []string{"runIndexCommand", "manual path remains unchanged", "planned", "ensureIndex", "precise", "config/config.go:22", "structural"} {
+	for _, expected := range []string{"runIndexCommand", "unchanged manual path", "planned", "ensureIndex", "precise", "config/config.go:22", "structural"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("integration tab missing %q:\n%s", expected, plain)
 		}
@@ -452,6 +522,77 @@ func TestReviewIntegrationTabLabelsPrecisionPreviewsAndHandsOff(t *testing.T) {
 	model.Update(key('o', "o"))
 	if opened != 1 || !strings.Contains(reviewPlain(model), "code is unavailable") {
 		t.Fatalf("VS Code hand-off = %d:\n%s", opened, reviewPlain(model))
+	}
+}
+
+func TestReviewIntegrationRendersOneDirectionalRelationshipWithHonestProvenance(t *testing.T) {
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	model.tab = tabIntegration
+	plain := reviewPlain(model)
+	for _, expected := range []string{
+		"planned · AI-declared", "precise · compiler-backed", "structural · parser-derived",
+		"Code / relationship detail", "[ View diff ]", "[ Open VS Code ]",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Integration missing %q:\n%s", expected, plain)
+		}
+	}
+	wantRelationships := []string{
+		"runIndexCommand → unchanged manual path → manual path remains unchanged",
+		"ensureIndex → reads → Config.AutoIndexEnabled",
+		"ensureIndex → calls → runIndexCommand",
+	}
+	for index, want := range wantRelationships {
+		if got := integrationLabel(model.snap.Projection.Integrations[index]); got != want {
+			t.Fatalf("relationship %d = %q, want %q", index, got, want)
+		}
+	}
+	for _, item := range model.snap.Projection.Integrations {
+		line := ansi.Strip(integrationLabel(item))
+		target := item.Symbol
+		if item.Parent == "" {
+			target = item.Change
+		}
+		if target != "" && strings.Count(line, target) != 1 {
+			t.Fatalf("relationship duplicated target %q in %q", target, line)
+		}
+	}
+	if strings.Contains(plain, "planned · compiler-backed") || strings.Contains(plain, "planned · parser-derived") {
+		t.Fatalf("planned relationship capability was inflated:\n%s", plain)
+	}
+	model.Update(tea.WindowSizeMsg{Width: 96, Height: 34})
+	if shellWidth := reviewPlain(model); !samePlainLine(shellWidth, "Existing-code boundaries", "Code / relationship detail") {
+		t.Fatalf("Integration did not retain split panes at shell content width:\n%s", shellWidth)
+	}
+}
+
+func TestReviewIntegrationAndDiffHandOffTheSelectedFileIdentity(t *testing.T) {
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	model.tab = tabIntegration
+	setReviewCursorByID(t, model, "review.integration.1")
+	model.Update(key('d', "d"))
+	if model.tab != tabDiff || model.diffFile() != "config/config.go" {
+		t.Fatalf("Integration handed off tab=%v file=%q", model.tab, model.diffFile())
+	}
+	model.Update(key('i', "i"))
+	integration, ok := model.selectedIntegration()
+	if model.tab != tabIntegration || !ok || integration.Path != "config/config.go" {
+		t.Fatalf("Diff handed back to integration tab=%v item=%+v ok=%v", model.tab, integration, ok)
+	}
+
+	model.tab = tabChanges
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	setReviewCursorByID(t, model, "review.file.old_indexer.go")
+	model.Update(key('d', "d"))
+	if model.tab != tabChanges || !strings.Contains(reviewPlain(model), "No actual diff") || !strings.Contains(reviewPlain(model), "[Changes]") {
+		t.Fatalf("untouched plan item opened an unrelated diff: tab=%v\n%s", model.tab, reviewPlain(model))
+	}
+
+	model.tab = tabIntegration
+	setReviewCursorByID(t, model, "review.integration.0")
+	model.Update(key('d', "d"))
+	if model.tab != tabIntegration || !strings.Contains(reviewPlain(model), "no changed file") {
+		t.Fatalf("location-free planned relationship opened an unrelated diff: tab=%v\n%s", model.tab, reviewPlain(model))
 	}
 }
 
@@ -500,8 +641,14 @@ func TestReviewDiffTabMovesFilesAndHunksAndAnnotatesThem(t *testing.T) {
 		model.Update(key(tea.KeyDown, ""))
 	}
 	plain = reviewPlain(model)
-	for _, expected := range []string{"ensureIndex", "+", "-", "Planned: yes", "Integration changed: yes"} {
+	words := strings.Join(strings.Fields(plain), " ")
+	for _, expected := range []string{"ensureIndex", "+", "-"} {
 		if !strings.Contains(plain, expected) {
+			t.Fatalf("diff tab missing %q:\n%s", expected, plain)
+		}
+	}
+	for _, expected := range []string{"Planned ✓", "Integration changed ✓"} {
+		if !strings.Contains(words, expected) {
 			t.Fatalf("diff tab missing %q:\n%s", expected, plain)
 		}
 	}
@@ -532,6 +679,45 @@ func TestReviewDiffTabMovesFilesAndHunksAndAnnotatesThem(t *testing.T) {
 	empty.tab = tabDiff
 	if plain := reviewPlain(empty); !strings.Contains(plain, "No diff") {
 		t.Fatalf("empty diff message missing:\n%s", plain)
+	}
+}
+
+func TestReviewDiffUsesFileNavigatorAndFocusedHunkAtWideAndNarrowWidths(t *testing.T) {
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	model.tab = tabDiff
+	for model.diffFile() != "indexer/indexer.go" {
+		model.Update(key(tea.KeyDown, ""))
+	}
+	wantIDs := append([]string(nil), model.screen().selectableItemIDs()...)
+	for _, size := range []struct {
+		width, height int
+		split         bool
+	}{{120, 34, true}, {96, 34, true}, {80, 24, false}} {
+		model.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		plain := reviewPlain(model)
+		words := strings.Join(strings.Fields(plain), " ")
+		assertTextOrder(t, plain, "Files", "Focused hunk")
+		for _, expected := range []string{"indexer/indexer.go", "Symbol", "ensureIndex", "[ Open VS Code ]", "[ Integration ]"} {
+			if !strings.Contains(plain, expected) {
+				t.Fatalf("Diff at %dx%d missing %q:\n%s", size.width, size.height, expected, plain)
+			}
+		}
+		for _, expected := range []string{"Planned ✓", "Integration changed ✓"} {
+			if !strings.Contains(words, expected) {
+				t.Fatalf("Diff at %dx%d missing %q:\n%s", size.width, size.height, expected, plain)
+			}
+		}
+		if !reflect.DeepEqual(model.screen().selectableItemIDs(), wantIDs) || model.diffFile() != "indexer/indexer.go" {
+			t.Fatalf("Diff resize changed file identity: ids=%v file=%q", model.screen().selectableItemIDs(), model.diffFile())
+		}
+		if size.split && !samePlainLine(plain, "Files", "Focused hunk") {
+			t.Fatalf("Diff did not retain split panes at shell content width %d:\n%s", size.width, plain)
+		}
+		for _, line := range strings.Split(plain, "\n") {
+			if ansi.StringWidth(line) > size.width {
+				t.Fatalf("Diff line overflow at %dx%d: %q", size.width, size.height, line)
+			}
+		}
 	}
 }
 

@@ -483,12 +483,12 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabChanges
 			return model
-		}, []string{"Review · Changes", "[Changes]", "Matched", "Additional", "config/config.go"}},
+		}, []string{"Review · Changes", "[Changes]", "Matched", "Additional"}},
 		{"integration", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabIntegration
 			return model
-		}, []string{"Review · Integration", "Existing code interaction", "ensureIndex", "precise"}},
+		}, []string{"Review · Integration", "Existing-code boundaries", "runIndexCommand", "planned"}},
 		{"evidence", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabEvidence
@@ -503,7 +503,7 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabDiff
 			return model
-		}, []string{"Review · Diff", "Diff ·", "Existing symbol", "hunk"}},
+		}, []string{"Review · Diff", "Files", "Focused hunk", "Symbol"}},
 		{"history", func() contractModel { return newHistoryModel(t.TempDir(), historyFixture(), true) }, []string{"Spec history", "Date", "Spec", "Status", "Selected", "Files", "duration"}},
 		{"timeline", func() contractModel {
 			model := newHistoryModel(t.TempDir(), historyFixture(), false)
