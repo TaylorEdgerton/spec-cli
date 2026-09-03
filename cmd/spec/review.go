@@ -462,7 +462,7 @@ func (m *reviewModel) View() tea.View {
 		body = append(body, "")
 	}
 	if m.help {
-		body = append(body, uiHelpOverlay(m.hints()))
+		body = append(body, uiHelpOverlayWidth(m.hints(), max(20, width-8)))
 	} else {
 		body = append(body, m.tabBody(width)...)
 	}
@@ -513,7 +513,7 @@ func (m *reviewModel) tabBody(width int) []string {
 	case tabDiff:
 		return m.diffBody(width)
 	case tabSummary:
-		return m.summaryBody()
+		return m.summaryBody(width)
 	}
 	return nil
 }
@@ -756,29 +756,22 @@ func (m *reviewModel) integrationTouches(path, symbol string) bool {
 	return false
 }
 
-func (m *reviewModel) summaryBody() []string {
+func (m *reviewModel) summaryBody(width int) []string {
 	stats := m.snap.Projection.Stats
 	compact := m.height > 0 && m.height <= 24
+	proseWidth := max(20, width-8)
 	tests := 0
 	for _, item := range m.snap.Evidence.Items {
 		if item.Automated {
 			tests++
 		}
 	}
-	lines := []string{uiTitleStyle.Render("Original intent"), "  " + emptyAs(m.snap.Intent, "No intent was recorded.")}
+	lines := []string{uiTitleStyle.Render("Original intent"), uiIndentedProse(emptyAs(m.snap.Intent, "No intent was recorded."), proseWidth, 2)}
 	if m.snap.Plan == nil {
-		if compact {
-			lines = append(lines, uiTitleStyle.Render("Implementation plan")+"  "+uiMutedStyle.Render("No implementation plan was submitted; planning is optional."))
-		} else {
-			lines = append(lines, uiTitleStyle.Render("Implementation plan"), uiMutedStyle.Render("  No implementation plan was submitted; planning is optional."))
-		}
+		lines = append(lines, uiTitleStyle.Render("Implementation plan"), uiIndentedProse(uiMutedStyle.Render("No implementation plan was submitted; planning is optional."), proseWidth, 2))
 	} else {
 		plan := fmt.Sprintf("%s (%d planned files · %s)", m.snap.Plan.Plan.Summary, len(m.snap.Plan.Plan.Files), m.snap.Plan.Source)
-		if compact {
-			lines = append(lines, uiTitleStyle.Render("Implementation plan")+"  "+plan)
-		} else {
-			lines = append(lines, uiTitleStyle.Render("Implementation plan"), "  "+plan)
-		}
+		lines = append(lines, uiTitleStyle.Render("Implementation plan"), uiIndentedProse(plan, proseWidth, 2))
 	}
 	if compact {
 		lines = append(lines, uiTitleStyle.Render("Actual change"),
