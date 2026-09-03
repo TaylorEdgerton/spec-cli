@@ -154,10 +154,87 @@ func uiEmptyState(title, reason string) string {
 	return strings.Join(lines, "\n")
 }
 
+// uiProse presents human-authored Markdown-like text without turning it into a
+// second navigation model. It styles headings and bullets, preserves paragraph
+// breaks, and wraps long words using the ANSI-aware utility already used by the
+// rest of the TUI.
+func uiProse(value string, width int) string {
+	width = max(1, width)
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	var rendered []string
+	for _, source := range strings.Split(value, "\n") {
+		line := strings.TrimSpace(source)
+		if line == "" {
+			rendered = append(rendered, "")
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			for _, wrapped := range strings.Split(ansi.Wrap(heading, width, " "), "\n") {
+				rendered = append(rendered, uiTitleStyle.Render(wrapped))
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+			wrapped := strings.Split(ansi.Wrap(strings.TrimSpace(line[2:]), max(1, width-2), " "), "\n")
+			for index, part := range wrapped {
+				prefix := "  "
+				if index == 0 {
+					prefix = "• "
+				}
+				rendered = append(rendered, prefix+part)
+			}
+			continue
+		}
+		rendered = append(rendered, strings.Split(ansi.Wrap(line, width, " "), "\n")...)
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func uiIndentedProse(value string, width, indent int) string {
+	indent = max(0, indent)
+	prefix := strings.Repeat(" ", indent)
+	lines := strings.Split(uiProse(value, max(1, width-indent)), "\n")
+	for index, line := range lines {
+		if line != "" {
+			lines[index] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func uiLabelledProse(label, value string, width int) string {
+	prefix := uiTitleStyle.Render(label) + "  "
+	continuation := strings.Repeat(" ", lipgloss.Width(prefix))
+	lines := strings.Split(uiProse(value, max(1, width-lipgloss.Width(prefix))), "\n")
+	for index, line := range lines {
+		if index == 0 {
+			lines[index] = prefix + line
+		} else if line != "" {
+			lines[index] = continuation + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func uiHelpOverlay(pairs [][2]string) string {
+	return uiHelpOverlayWidth(pairs, 80)
+}
+
+func uiHelpOverlayWidth(pairs [][2]string, width int) string {
+	width = max(12, width)
 	lines := []string{uiTitleStyle.Render("Keys"), ""}
 	for _, pair := range pairs {
-		lines = append(lines, "  "+uiKeyStyle.Render(pair[0])+"  "+uiMutedStyle.Render(pair[1]))
+		prefix := "  " + uiKeyStyle.Render(pair[0]) + "  "
+		continuation := strings.Repeat(" ", lipgloss.Width(prefix))
+		wrapped := strings.Split(ansi.Wrap(uiMutedStyle.Render(pair[1]), max(1, width-lipgloss.Width(prefix)), " "), "\n")
+		for index, line := range wrapped {
+			if index == 0 {
+				lines = append(lines, prefix+line)
+			} else {
+				lines = append(lines, continuation+line)
+			}
+		}
 	}
 	return strings.Join(append(lines, "", uiMutedStyle.Render("  ? closes this help.")), "\n")
 }
