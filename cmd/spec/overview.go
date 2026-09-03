@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	promptbuilder "github.com/TaylorEdgerton/spec-cli/internal/prompt"
@@ -245,7 +246,7 @@ func (m *overviewModel) View() tea.View {
 	header := fmt.Sprintf("%s · %s  OPEN\n%s · baseline %s · %s", m.data.SpecID, m.data.Title, m.data.Branch, base, homeElapsed(m.data.StartedAt, m.data.Now))
 	body := strings.Join(lines, "\n")
 	if m.help {
-		body = uiHelpOverlay(m.hints())
+		body = uiHelpOverlayWidth(m.hints(), max(20, w-8))
 	}
 	anchor := ""
 	if item, ok := m.screen().selectedItem(); ok {
@@ -256,19 +257,30 @@ func (m *overviewModel) View() tea.View {
 }
 
 func (m *overviewModel) bodyLines(width int, compact bool) []string {
-	lines := []string{uiTitleStyle.Render("Intent"), emptyAs(m.data.Intent, "No intent was provided."), uiTitleStyle.Render("Expected behaviour"), emptyAs(m.data.Scope, "No expected behaviour was provided.")}
+	var lines []string
 	if compact {
-		lines = []string{
-			uiTitleStyle.Render("Intent") + "  " + emptyAs(m.data.Intent, "No intent was provided."),
-			uiTitleStyle.Render("Expected behaviour") + "  " + emptyAs(m.data.Scope, "No expected behaviour was provided."),
-		}
+		lines = append(lines,
+			uiLabelledProse("Intent", emptyAs(m.data.Intent, "No intent was provided."), width),
+			uiLabelledProse("Expected behaviour", emptyAs(m.data.Scope, "No expected behaviour was provided."), width),
+		)
+	} else {
+		lines = append(lines, uiTitleStyle.Render("Intent"))
+		lines = append(lines, strings.Split(uiProse(emptyAs(m.data.Intent, "No intent was provided."), width), "\n")...)
+		lines = append(lines, uiTitleStyle.Render("Expected behaviour"))
+		lines = append(lines, strings.Split(uiProse(emptyAs(m.data.Scope, "No expected behaviour was provided."), width), "\n")...)
 	}
 	next := m.next()
 	nextMessage := next.Message
 	if m.status != "" {
 		nextMessage = m.status
 	}
-	nextLines := []string{uiTitleStyle.Render(next.Title) + " · " + nextMessage}
+	var nextLines []string
+	if compact {
+		nextLines = append(nextLines, uiLabelledProse(next.Title, nextMessage, max(10, width-4)))
+	} else {
+		nextLines = append(nextLines, uiTitleStyle.Render(next.Title))
+		nextLines = append(nextLines, strings.Split(uiProse(nextMessage, max(10, width-4)), "\n")...)
+	}
 	selected, _ := m.screen().selectedItem()
 	for _, item := range next.Items {
 		row := "  " + item.Label
@@ -277,7 +289,8 @@ func (m *overviewModel) bodyLines(width int, compact bool) []string {
 		}
 		nextLines = append(nextLines, row)
 	}
-	lines = append(lines, uiPanel(width, len(nextLines)+2, uiPurple, "NEXT", "", strings.Join(nextLines, "\n")))
+	nextBody := strings.Join(nextLines, "\n")
+	lines = append(lines, uiPanel(width, lipgloss.Height(nextBody)+2, uiPurple, "NEXT", "", nextBody))
 	if compact {
 		lines = append(lines, uiTitleStyle.Render("Change lifecycle"))
 		lines = append(lines, m.compactLifecycleLines()...)

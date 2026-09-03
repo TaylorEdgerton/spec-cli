@@ -49,6 +49,27 @@ func TestOverviewRendersOrderedOrientationWithoutPercentageProgress(t *testing.T
 	}
 }
 
+func TestOverviewWrapsMultilineIntentAndScopeAtSupportedWidth(t *testing.T) {
+	model := newOverviewModel(overviewData{
+		SpecID: "SPEC-101", Title: "Readable prose", Baseline: "abcdef123456", Branch: "main", Now: time.Now(),
+		Intent: "Replace the first implementation detail with a reusable component.\n\nKeep the human-facing workflow understandable at narrow terminal widths.",
+		Scope:  "The existing navigation remains selectable, while very long explanatory prose wraps instead of being silently truncated at the shell boundary.",
+		Facts:  overviewFacts{BaselineReady: true},
+	})
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	plain := ansi.Strip(model.View().Content)
+	for _, expected := range []string{"Replace the first implementation", "Keep the human-facing workflow", "existing navigation remains"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Overview prose missing %q:\n%s", expected, plain)
+		}
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if ansi.StringWidth(line) > 80 {
+			t.Fatalf("Overview line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
 func TestOverviewNextActionsDeriveFromDurableFacts(t *testing.T) {
 	tests := []struct {
 		name  string
