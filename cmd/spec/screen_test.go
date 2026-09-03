@@ -103,6 +103,27 @@ func TestSharedUIComponentsExposeTheEstablishedVisualLanguage(t *testing.T) {
 	}
 }
 
+func TestSharedProseRendererWrapsMarkdownLikeContentWithoutLosingText(t *testing.T) {
+	input := "# Outcome\n\nA deliberately long paragraph explains what should happen when the implementation is complete and why the behaviour matters.\n\n- First detailed consequence for callers\n- SupercalifragilisticexpialidociousBoundary"
+	plain := ansi.Strip(uiProse(input, 32))
+	for _, expected := range []string{"Outcome", "deliberately long", "• First detailed", "Supercalifragilistic"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("prose missing %q:\n%s", expected, plain)
+		}
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if ansi.StringWidth(line) > 32 {
+			t.Fatalf("prose line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+	help := ansi.Strip(uiHelpOverlayWidth([][2]string{{"enter", "open the selected item and preserve the surrounding navigation state"}}, 32))
+	for _, line := range strings.Split(help, "\n") {
+		if ansi.StringWidth(line) > 32 {
+			t.Fatalf("help line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
 func TestCanonicalScreenExplainsEmptySections(t *testing.T) {
 	screen := canonicalScreen{Sections: []screenSection{{
 		ID: "evidence", Title: "Evidence", EmptyReason: "No evidence has been recorded for this Spec.",

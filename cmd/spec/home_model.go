@@ -153,7 +153,7 @@ func (model *homeModel) View() tea.View {
 	header := uiSplit("Spec", strings.Trim(strings.Join([]string{model.data.Branch, model.data.GitState}, " · "), " ·"), max(1, width-4))
 	body := model.body()
 	if model.help {
-		body = uiHelpOverlay(model.hints())
+		body = uiHelpOverlayWidth(model.hints(), max(20, width-8))
 	}
 	return tea.NewView(uiAppShell(width, height, header, body, uiKeyHints(model.hints(), "     ")))
 }

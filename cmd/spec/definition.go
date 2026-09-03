@@ -160,7 +160,7 @@ func (model *definitionModel) View() tea.View {
 	}
 	if model.help {
 		return tea.NewView(uiAppShell(width, height, uiSplit("Spec · New Change", "Git: "+model.gitState, max(1, width-8)),
-			uiHelpOverlay(model.hints()), uiKeyHints(model.hints(), "    ")))
+			uiHelpOverlayWidth(model.hints(), max(20, width-8)), uiKeyHints(model.hints(), "    ")))
 	}
 	screen := model.screen()
 	items := screen.Sections[0].Items
