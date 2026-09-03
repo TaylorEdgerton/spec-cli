@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type planModel struct {
@@ -19,6 +21,8 @@ type planModel struct {
 	cursor, width, height int
 	done                  bool
 	help                  bool
+	raw                   bool
+	rawColumn             int
 	nav                   string
 	viewport              int
 }
@@ -40,7 +44,7 @@ func (m *planModel) screen() canonicalScreen {
 		integrations = append(integrations, screenItem{ID: fmt.Sprintf("plan.integration.%d", index), Label: item.ExistingSymbol, Selectable: true, Preview: item})
 	}
 	return canonicalScreen{Sections: []screenSection{
-		{ID: "files", Title: "Planned files", Items: files},
+		{ID: "files", Title: "Planned changes", Items: files},
 		{ID: "integrations", Title: "Existing integration points", Items: integrations},
 	}, Cursor: m.cursor}
 }
@@ -55,9 +59,25 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch v.Keystroke() {
 		case "up", "k":
+			if m.raw {
+				m.viewport = max(0, m.viewport-1)
+				break
+			}
 			m.cursor, m.status = wrap(m.cursor-1, len(m.screen().selectableItems())), ""
 		case "down", "j":
+			if m.raw {
+				m.viewport++
+				break
+			}
 			m.cursor, m.status = wrap(m.cursor+1, len(m.screen().selectableItems())), ""
+		case "left":
+			if m.raw {
+				m.rawColumn = max(0, m.rawColumn-m.rawColumnStep())
+			}
+		case "right":
+			if m.raw {
+				m.rawColumn += m.rawColumnStep()
+			}
 		case "pgup":
 			m.viewport = max(0, m.viewport-max(1, m.height/2))
 		case "pgdown":
@@ -78,10 +98,16 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.help = !m.help
+		case "x":
+			m.raw, m.viewport, m.rawColumn = !m.raw, 0, 0
 		case "r":
 			m.leave(actionReview)
 			return m, tea.Quit
 		case "b", "esc":
+			if m.raw {
+				m.raw, m.viewport, m.rawColumn = false, 0, 0
+				return m, nil
+			}
 			m.leave(actionBack)
 			return m, tea.Quit
 		case "ctrl+c":
@@ -95,8 +121,13 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *planModel) leave(action string) { m.done, m.nav = true, action }
 
 func (m *planModel) hints() [][2]string {
-	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
+	if m.raw {
+		return [][2]string{{"↑/↓", "rows"}, {"←/→", "columns"}, {"x", "readable plan"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
+	}
+	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"x", "inspect raw"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
 }
+
+func (m *planModel) rawColumnStep() int { return max(8, max(20, m.width-8)/3) }
 func (m *planModel) selectedID() string {
 	item, ok := m.screen().selectedItem()
 	if !ok {
@@ -139,47 +170,74 @@ func (m *planModel) View() tea.View {
 		h = 32
 	}
 	if m.help {
-		return tea.NewView(uiAppShell(w, h, "Implementation Plan", uiHelpOverlay(m.hints()), uiKeyHints(m.hints(), "  ")))
+		return tea.NewView(uiAppShell(w, h, "Implementation Plan", uiHelpOverlayWidth(m.hints(), max(20, w-8)), uiKeyHints(m.hints(), "  ")))
 	}
 	if m.stored == nil {
 		body := uiEmptyState("No implementation plan", "No implementation plan was submitted. The plan is optional; actual-change review remains available.")
 		return tea.NewView(uiAppShell(w, h, "Implementation Plan", body, uiKeyHints(m.hints(), "  ")))
 	}
 	p := m.stored.Plan
+	if m.raw {
+		canonical, err := json.MarshalIndent(p, "", "  ")
+		body := ""
+		if err != nil {
+			body = uiEmptyState("Raw ChangePlan unavailable", err.Error())
+		} else {
+			width := max(20, w-8)
+			jsonLines := strings.Split(string(canonical), "\n")
+			maxWidth := 0
+			for _, line := range jsonLines {
+				maxWidth = max(maxWidth, ansi.StringWidth(line))
+			}
+			m.rawColumn = clamp(m.rawColumn, 0, max(0, maxWidth-width))
+			for index, line := range jsonLines {
+				jsonLines[index] = ansi.Cut(line, m.rawColumn, m.rawColumn+width)
+			}
+			columns := fmt.Sprintf("columns %d–%d of %d", m.rawColumn+1, min(maxWidth, m.rawColumn+width), maxWidth)
+			body = uiSplit("Raw ChangePlan", columns, width) + "\n\n" + strings.Join(jsonLines, "\n")
+		}
+		body, m.viewport = uiViewportBody(body, uiWorkflowBodyHeight(h, "Implementation Plan · Raw"), m.viewport, "")
+		return tea.NewView(uiAppShell(w, h, "Implementation Plan · Raw", body, uiKeyHints(m.hints(), "  ")))
+	}
 	screen := m.screen()
-	lines := []string{uiTitleStyle.Render("Summary"), p.Summary, "", uiTitleStyle.Render("Planned files")}
+	proseWidth := max(20, w-8)
+	lines := []string{uiTitleStyle.Render("Summary"), uiProse(p.Summary, proseWidth), "", uiTitleStyle.Render("Planned changes")}
 	selected := m.selectedID()
 	for _, item := range screen.Sections[0].Items {
 		f := item.Preview.(state.PlannedFile)
-		row := fmt.Sprintf("  %s %s\n    %s", strings.ToUpper(string(f.Action[:1])), f.Path, f.Reason)
+		row := fmt.Sprintf("  %s %s", strings.ToUpper(string(f.Action[:1])), f.Path)
 		if selected == item.ID {
-			row = uiSelectedRow("> "+string(f.Action)+" "+f.Path, 0) + "\n    " + f.Reason
+			row = uiSelectedRow("> "+string(f.Action)+" "+f.Path, 0)
 		}
 		lines = append(lines, row)
+		if strings.TrimSpace(f.Reason) != "" {
+			lines = append(lines, uiIndentedProse(f.Reason, proseWidth, 4))
+		}
 	}
 	lines = append(lines, "", uiTitleStyle.Render("Existing integration points"))
 	for _, screenItem := range screen.Sections[1].Items {
 		item := screenItem.Preview.(state.PlannedIntegration)
-		row := fmt.Sprintf("  %s\n    ↳ %s · %s", item.ExistingSymbol, item.PlannedChange, item.Relationship)
+		row := "  " + item.ExistingSymbol
 		if selected == screenItem.ID {
-			row = uiSelectedRow("> "+item.ExistingSymbol, 0) + "\n    ↳ " + item.PlannedChange + " · " + item.Relationship
+			row = uiSelectedRow("> "+item.ExistingSymbol, 0)
 		}
 		lines = append(lines, row)
+		lines = append(lines, uiIndentedProse("↳ "+item.PlannedChange+" · "+item.Relationship, proseWidth, 4))
 	}
-	lines = append(lines, "", uiTitleStyle.Render("Planned verification"))
+	lines = append(lines, "", uiTitleStyle.Render("Verification"))
 	if len(p.Verification) == 0 {
 		lines = append(lines, uiMutedStyle.Render("No verification behaviours declared."))
 	} else {
 		for _, v := range p.Verification {
-			lines = append(lines, "  • "+v.Behaviour+emptySuffix(v.LikelyLocation, " · "))
+			lines = append(lines, uiIndentedProse("- "+v.Behaviour+emptySuffix(v.LikelyLocation, " · "), proseWidth, 2))
 		}
 	}
-	lines = append(lines, "", uiTitleStyle.Render("Uncertain"))
+	lines = append(lines, "", uiTitleStyle.Render("Uncertainties"))
 	if len(p.Uncertainties) == 0 {
 		lines = append(lines, uiMutedStyle.Render("No uncertainties declared."))
 	} else {
 		for _, u := range p.Uncertainties {
-			lines = append(lines, "  • "+u)
+			lines = append(lines, uiIndentedProse("- "+u, proseWidth, 2))
 		}
 	}
 	if preview := m.preview(); preview != "" {
