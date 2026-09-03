@@ -478,7 +478,7 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 		{"overview", func() contractModel {
 			return newOverviewModel(overviewData{Title: "Disable automatic indexing", SpecID: "SPEC-014", Branch: "main", Baseline: reviewBaseline, Intent: "Disable automatic indexing", Scope: "Preserve manual indexing", StartedAt: time.Now().Add(-12 * time.Minute), Now: time.Now(), Facts: overviewFacts{BaselineReady: true}})
 		}, []string{"SPEC-014", "main", "Intent", "NEXT", "Change lifecycle", "Since baseline"}},
-		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"Implementation Plan", "Summary", "Planned files", "Existing integration points", "enter inspect"}},
+		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"Implementation Plan", "Summary", "Planned changes", "Existing integration points", "enter inspect"}},
 		{"review-changes", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabChanges
