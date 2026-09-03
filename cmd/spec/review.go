@@ -29,15 +29,14 @@ const (
 type reviewTab int
 
 const (
-	tabOverview reviewTab = iota
-	tabFiles
+	tabSummary reviewTab = iota
+	tabChanges
 	tabIntegration
 	tabEvidence
 	tabDiff
-	tabStats
 )
 
-var reviewTabLabels = []string{"Overview", "Files", "Integration", "Evidence", "Diff", "Stats"}
+var reviewTabLabels = []string{"Summary", "Changes", "Integration", "Evidence", "Diff"}
 
 type reviewDecision string
 
@@ -48,6 +47,19 @@ const (
 )
 
 type reviewRow struct{ ID, Label, Detail string }
+
+type attentionKind string
+
+const (
+	attentionNeutral attentionKind = "neutral"
+	attentionReview  attentionKind = "review"
+)
+
+type reviewAttentionItem struct {
+	ID, Label string
+	Kind      attentionKind
+	Target    reviewTab
+}
 
 // reviewSnapshot is the single explicitly refreshed set of facts
 type reviewSnapshot struct {
@@ -98,7 +110,7 @@ func (m *reviewModel) screen() canonicalScreen {
 	items := make([]screenItem, 0)
 	sections := make([]screenSection, 0, 1)
 	switch m.tab {
-	case tabFiles:
+	case tabChanges:
 		for _, file := range m.filteredFiles() {
 			items = append(items, screenItem{ID: "review.file." + file.Path, Label: file.Path, Detail: file.Reason, Selectable: true, Preview: file})
 		}
@@ -125,11 +137,14 @@ func (m *reviewModel) screen() canonicalScreen {
 		for _, file := range m.diffFiles() {
 			items = append(items, screenItem{ID: "review.diff." + file.Path, Label: file.Path, Selectable: true, Preview: file})
 		}
-	case tabStats:
-		items = []screenItem{
-			{ID: "review.complete", Label: "Complete Spec", Selectable: true, Action: screenAction(actionComplete)},
-			{ID: "review.request_changes", Label: "Request Changes", Selectable: true, Action: screenAction(actionChanges)},
+	case tabSummary:
+		for _, attention := range projectReviewAttention(m.snap) {
+			items = append(items, screenItem{ID: "review.attention." + attention.ID, Label: attention.Label, Selectable: true, Preview: attention})
 		}
+		items = append(items,
+			screenItem{ID: "review.complete", Label: "Complete Spec", Selectable: true, Action: screenAction(actionComplete)},
+			screenItem{ID: "review.request_changes", Label: "Request Changes", Selectable: true, Action: screenAction(actionChanges)},
+		)
 	}
 	if len(sections) > 0 {
 		return canonicalScreen{Sections: sections, Cursor: m.cursors[m.tab]}
@@ -228,7 +243,7 @@ func (m *reviewModel) moveHunk(delta int) {
 }
 
 func (m *reviewModel) cycleFilter() {
-	if m.tab != tabFiles {
+	if m.tab != tabChanges {
 		return
 	}
 	order := []review.FileStatus{"", review.StatusMatched, review.StatusAdditional, review.StatusUntouched}
@@ -238,11 +253,11 @@ func (m *reviewModel) cycleFilter() {
 			break
 		}
 	}
-	m.cursors[tabFiles], m.status = 0, ""
+	m.cursors[tabChanges], m.status = 0, ""
 }
 
 func (m *reviewModel) showDiff() {
-	if m.tab == tabFiles {
+	if m.tab == tabChanges {
 		if row, ok := m.selectedRow(); ok {
 			m.selectDiffFile(strings.TrimPrefix(row.ID, "review.file."))
 		}
@@ -292,6 +307,13 @@ func (m *reviewModel) refreshSnapshot() {
 }
 
 func (m *reviewModel) activate() tea.Cmd {
+	selected, selectedOK := m.screen().selectedItem()
+	if selectedOK {
+		if attention, ok := selected.Preview.(reviewAttentionItem); ok {
+			m.openAttention(attention)
+			return nil
+		}
+	}
 	row, ok := m.selectedRow()
 	if !ok {
 		return nil
@@ -309,12 +331,22 @@ func (m *reviewModel) activate() tea.Cmd {
 		m.recordEvent(state.TimelineChangesRequested, "human requested more changes")
 		m.leave(actionChanges)
 		return tea.Quit
-	case m.tab == tabFiles:
+	case m.tab == tabChanges:
 		m.showDiff()
 	case m.tab == tabIntegration, m.tab == tabDiff:
 		m.openSelected()
 	}
 	return nil
+}
+
+func (m *reviewModel) openAttention(item reviewAttentionItem) {
+	switch item.ID {
+	case "additional":
+		m.filter = review.StatusAdditional
+	case "untouched":
+		m.filter = review.StatusUntouched
+	}
+	m.selectTab(item.Target)
 }
 
 func (m *reviewModel) recordEvent(eventType state.TimelineEventType, summary string) {
@@ -394,7 +426,7 @@ func (m *reviewModel) selectedLocation() (string, int) {
 		if item, ok := m.selectedIntegration(); ok {
 			return item.Path, item.Line
 		}
-	case tabFiles:
+	case tabChanges:
 		if row, ok := m.selectedRow(); ok {
 			return strings.TrimPrefix(row.ID, "review.file."), 0
 		}
@@ -425,8 +457,9 @@ func (m *reviewModel) View() tea.View {
 			fmt.Sprintf("Review needs at least %dx%d; this terminal is %dx%d.", reviewMinWidth, reviewMinHeight, width, height)))
 	}
 	body := []string{}
-	if m.tab != tabStats {
-		body = append(body, uiTabs(reviewTabLabels, int(m.tab)), "")
+	body = append(body, uiTabs(reviewTabLabels, int(m.tab)))
+	if height > 24 {
+		body = append(body, "")
 	}
 	if m.help {
 		body = append(body, uiHelpOverlay(m.hints()))
@@ -441,9 +474,6 @@ func (m *reviewModel) View() tea.View {
 		fmt.Sprintf("%s · %s", m.snap.SpecID, shortSHA(m.snap.Baseline)),
 		max(1, width-4),
 	)
-	if m.tab == tabStats {
-		header = uiSplit("Change Summary", fmt.Sprintf("%s · %s", m.snap.SpecID, shortSHA(m.snap.Baseline)), max(1, width-4))
-	}
 	rendered := strings.Join(body, "\n")
 	anchor := ""
 	if item, ok := m.screen().selectedItem(); ok {
@@ -458,7 +488,7 @@ func (m *reviewModel) footer() string { return uiKeyHints(m.hints(), "  ") }
 func (m *reviewModel) hints() [][2]string {
 	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}, {"enter", "action"}}
 	switch m.tab {
-	case tabFiles:
+	case tabChanges:
 		hints = append(hints, [2]string{"f", "filter"}, [2]string{"d", "diff"})
 	case tabIntegration:
 		hints = append(hints, [2]string{"o", "VS Code"}, [2]string{"d", "diff"})
@@ -466,7 +496,7 @@ func (m *reviewModel) hints() [][2]string {
 		hints = append(hints, [2]string{"t", "run tests"}, [2]string{"d", "test diff"}, [2]string{"s", "summary"})
 	case tabDiff:
 		hints = append(hints, [2]string{"n/p", "hunk"}, [2]string{"o", "VS Code"}, [2]string{"i", "integration"})
-	case tabStats:
+	case tabSummary:
 		hints = append(hints, [2]string{"d", "diff"}, [2]string{"i", "integration"}, [2]string{"e", "evidence"})
 	}
 	return append(hints, [2]string{"r", "refresh"}, [2]string{"?", "help"}, [2]string{"b", "back"}, [2]string{"g", "home"})
@@ -474,7 +504,7 @@ func (m *reviewModel) hints() [][2]string {
 
 func (m *reviewModel) tabBody(width int) []string {
 	switch m.tab {
-	case tabFiles:
+	case tabChanges:
 		return m.filesBody()
 	case tabIntegration:
 		return m.integrationBody(width)
@@ -482,51 +512,10 @@ func (m *reviewModel) tabBody(width int) []string {
 		return m.evidenceBody()
 	case tabDiff:
 		return m.diffBody(width)
-	case tabStats:
-		return m.statsBody()
+	case tabSummary:
+		return m.summaryBody()
 	}
-	return m.overviewBody()
-}
-
-func (m *reviewModel) overviewBody() []string {
-	stats := m.snap.Projection.Stats
-	lines := []string{uiTitleStyle.Render("Original intent"), "  " + emptyAs(m.snap.Intent, "No intent was recorded.")}
-	if m.snap.Plan != nil {
-		lines = append(lines,
-			uiTitleStyle.Render("Implementation plan"),
-			fmt.Sprintf("  %s (%d planned files · %s)", m.snap.Plan.Plan.Summary, len(m.snap.Plan.Plan.Files), m.snap.Plan.Source))
-	}
-	lines = append(lines,
-		uiTitleStyle.Render("Actual change"),
-		fmt.Sprintf("  Changed files %d · +%d -%d · reviewability %s",
-			stats.Files, stats.Additions, stats.Deletions, strings.ToUpper(string(m.snap.Projection.Reviewability))))
-	if m.snap.Plan != nil {
-		drift := m.snap.Projection.Drift
-		lines = append(lines, uiTitleStyle.Render("Plan vs actual"),
-			fmt.Sprintf("  Matched %d   Additional %d   Planned but untouched %d", drift.Matched, drift.Additional, drift.Untouched))
-	}
-	lines = append(lines, uiTitleStyle.Render("Existing code integrations"))
-	lines = append(lines, previewRows(m.integrationSummaries(), 2, "No existing-code relationships are available.")...)
-	lines = append(lines, uiTitleStyle.Render("Implementation"))
-	lines = append(lines, previewRows(m.changedSummaries(), 2, "No file changes have been observed since the baseline.")...)
-	lines = append(lines, uiTitleStyle.Render("Evidence"), "  "+m.evidenceCounts())
-	return append(lines, uiTitleStyle.Render("Diff"), uiMutedStyle.Render("  The raw diff stays on the Diff tab."))
-}
-
-func (m *reviewModel) integrationSummaries() []string {
-	rows := make([]string, 0, len(m.snap.Projection.Integrations))
-	for _, item := range m.snap.Projection.Integrations {
-		rows = append(rows, "  "+integrationLabel(item)+"  "+uiMutedStyle.Render(string(item.Precision)))
-	}
-	return rows
-}
-
-func (m *reviewModel) changedSummaries() []string {
-	rows := make([]string, 0)
-	for _, file := range m.diffFiles() {
-		rows = append(rows, fmt.Sprintf("  %s  %s", file.Path, uiMutedStyle.Render(string(file.Status))))
-	}
-	return rows
+	return nil
 }
 
 func (m *reviewModel) filesBody() []string {
@@ -767,41 +756,85 @@ func (m *reviewModel) integrationTouches(path, symbol string) bool {
 	return false
 }
 
-func (m *reviewModel) statsBody() []string {
+func (m *reviewModel) summaryBody() []string {
 	stats := m.snap.Projection.Stats
+	compact := m.height > 0 && m.height <= 24
 	tests := 0
 	for _, item := range m.snap.Evidence.Items {
 		if item.Automated {
 			tests++
 		}
 	}
-	lines := []string{
-		fmt.Sprintf("  %-14s %-14s %-14s %s", "Files", "Lines", "Tests", "Reviewability"),
-		fmt.Sprintf("  %-14d %-14s %-14d %s", stats.Files,
-			fmt.Sprintf("+%d -%d", stats.Additions, stats.Deletions), tests,
-			strings.ToUpper(string(m.snap.Projection.Reviewability))),
-		uiMutedStyle.Render("  Thresholds: GOOD ≤ 6 files / 300 changed lines · MODERATE ≤ 12 / 800 · otherwise LOW"),
-		uiTitleStyle.Render("What changed"),
-	}
-	changed := m.changedSummaries()
-	if len(changed) == 0 {
-		lines = append(lines, uiMutedStyle.Render("  No file changes have been observed since the baseline."))
+	lines := []string{uiTitleStyle.Render("Original intent"), "  " + emptyAs(m.snap.Intent, "No intent was recorded.")}
+	if m.snap.Plan == nil {
+		if compact {
+			lines = append(lines, uiTitleStyle.Render("Implementation plan")+"  "+uiMutedStyle.Render("No implementation plan was submitted; planning is optional."))
+		} else {
+			lines = append(lines, uiTitleStyle.Render("Implementation plan"), uiMutedStyle.Render("  No implementation plan was submitted; planning is optional."))
+		}
 	} else {
-		for _, summary := range changed {
-			lines = append(lines, "  • "+strings.TrimSpace(ansi.Strip(summary)))
+		plan := fmt.Sprintf("%s (%d planned files · %s)", m.snap.Plan.Plan.Summary, len(m.snap.Plan.Plan.Files), m.snap.Plan.Source)
+		if compact {
+			lines = append(lines, uiTitleStyle.Render("Implementation plan")+"  "+plan)
+		} else {
+			lines = append(lines, uiTitleStyle.Render("Implementation plan"), "  "+plan)
 		}
 	}
+	if compact {
+		lines = append(lines, uiTitleStyle.Render("Actual change"),
+			fmt.Sprintf("  Files %d · Lines +%d -%d · Tests %d · Reviewability %s", stats.Files, stats.Additions, stats.Deletions, tests, strings.ToUpper(string(m.snap.Projection.Reviewability))))
+	} else {
+		lines = append(lines,
+			uiTitleStyle.Render("Actual change"),
+			fmt.Sprintf("  %-14s %-14s %-14s %s", "Files", "Lines", "Tests", "Reviewability"),
+			fmt.Sprintf("  %-14d %-14s %-14d %s", stats.Files,
+				fmt.Sprintf("+%d -%d", stats.Additions, stats.Deletions), tests,
+				strings.ToUpper(string(m.snap.Projection.Reviewability))))
+	}
+	if m.snap.Plan != nil {
+		drift := m.snap.Projection.Drift
+		lines = append(lines, uiTitleStyle.Render("Plan vs actual"),
+			fmt.Sprintf("  Matched %d   Additional %d   Planned but untouched %d", drift.Matched, drift.Additional, drift.Untouched))
+	}
 	lines = append(lines, uiTitleStyle.Render("Review attention"))
-	attention := m.reviewAttention()
+	attention := projectReviewAttention(m.snap)
 	if len(attention) == 0 {
 		lines = append(lines, uiMutedStyle.Render("  Nothing stands out from the recorded facts."))
+	} else {
+		selected, _ := m.screen().selectedItem()
+		visible, hidden := visibleAttention(attention, selected.ID, compact)
+		for _, item := range visible {
+			mark := "!"
+			if item.Kind == attentionNeutral {
+				mark = "+"
+			}
+			row := fmt.Sprintf("%s %s", mark, item.Label)
+			if selected.ID == "review.attention."+item.ID {
+				lines = append(lines, uiSelectedRow("> "+row, 0))
+			} else {
+				lines = append(lines, "  "+row)
+			}
+		}
+		if hidden > 0 {
+			lines = append(lines, uiMutedStyle.Render(fmt.Sprintf("  … %d more attention items; use ↑/↓ to inspect", hidden)))
+		}
 	}
-	lines = append(lines, attention...)
-	lines = append(lines, uiTitleStyle.Render("Evidence"), "  "+m.evidenceCounts())
+	if len(m.snap.Evidence.Items) == 0 {
+		lines = append(lines, uiTitleStyle.Render("Evidence")+"  "+uiMutedStyle.Render("No evidence has been recorded. Open Evidence to run verification."))
+	} else {
+		if compact {
+			lines = append(lines, uiTitleStyle.Render("Evidence")+"  "+m.evidenceCounts())
+		} else {
+			lines = append(lines, uiTitleStyle.Render("Evidence"), "  "+m.evidenceCounts())
+		}
+	}
 
-	selected, _ := m.selectedRow()
-	actions := make([]string, 0, len(m.screen().selectableItems()))
+	selected, _ := m.screen().selectedItem()
+	actions := make([]string, 0, 2)
 	for _, item := range m.screen().selectableItems() {
+		if item.ID != "review.complete" && item.ID != "review.request_changes" {
+			continue
+		}
 		action := "[ " + item.Label + " ]"
 		if selected.ID == item.ID {
 			action = uiSelectedRow("> "+action, 0)
@@ -810,59 +843,98 @@ func (m *reviewModel) statsBody() []string {
 		}
 		actions = append(actions, action)
 	}
-	lines = append(lines, "", "               "+strings.Join(actions, "   "))
+	if compact {
+		lines = append(lines, "  "+strings.Join(actions, "   "))
+	} else {
+		lines = append(lines, "", "               "+strings.Join(actions, "   "))
+	}
 	if m.decision != decisionNone {
 		lines = append(lines, uiMutedStyle.Render("  Recorded decision: "+string(m.decision)))
 	}
 	return lines
 }
 
-func (m *reviewModel) reviewAttention() []string {
-	drift := m.snap.Projection.Drift
-	var lines []string
-	if m.snap.Plan == nil {
-		lines = append(lines, "  ! No implementation plan was submitted; the plan is optional.")
+func visibleAttention(items []reviewAttentionItem, selectedID string, compact bool) ([]reviewAttentionItem, int) {
+	if !compact || len(items) <= 2 {
+		return items, 0
 	}
-	if unreviewed := m.unreviewedCriteria(); unreviewed > 0 {
-		noun := "criterion has"
-		if unreviewed > 1 {
-			noun = "criteria have"
-		}
-		lines = append(lines, fmt.Sprintf("  ! %d acceptance %s not been reviewed", unreviewed, noun))
-	}
-	if len(m.snap.Evidence.Items) == 0 {
-		lines = append(lines, "  ! No evidence has been recorded for this change.")
-	}
-	for _, item := range m.snap.Evidence.Items {
-		if item.Automated && !item.Passing {
-			lines = append(lines, "  ! "+item.Name+" is not passing")
+	selected := 0
+	for index, item := range items {
+		if selectedID == "review.attention."+item.ID {
+			selected = index
+			break
 		}
 	}
-	if drift.Additional > 0 {
-		lines = append(lines, fmt.Sprintf("  ! %d files changed outside the original plan", drift.Additional))
-	}
-	if drift.Untouched > 0 {
-		lines = append(lines, fmt.Sprintf("  ! %d planned files remain unchanged", drift.Untouched))
-	}
-	for _, item := range m.snap.Evidence.Items {
-		if !item.Fresh {
-			lines = append(lines, "  ! "+item.Name+" was recorded against a different worktree")
-		}
-	}
-	if m.snap.Projection.Reviewability != review.ReviewabilityGood {
-		lines = append(lines, "  ! review size is "+string(m.snap.Projection.Reviewability))
-	}
-	return lines
+	start := clamp(selected, 0, len(items)-2)
+	return items[start : start+2], len(items) - 2
 }
 
-func (m *reviewModel) unreviewedCriteria() int {
+func projectReviewAttention(snapshot reviewSnapshot) []reviewAttentionItem {
+	items := make([]reviewAttentionItem, 0)
+	add := func(id, label string, kind attentionKind, target reviewTab) {
+		items = append(items, reviewAttentionItem{ID: id, Label: label, Kind: kind, Target: target})
+	}
+	drift := snapshot.Projection.Drift
+	if snapshot.Plan == nil {
+		add("no-plan", "No implementation plan was submitted; planning is optional.", attentionNeutral, tabChanges)
+	} else {
+		if drift.Additional > 0 {
+			add("additional", fmt.Sprintf("%d additional files changed outside the accepted plan", drift.Additional), attentionNeutral, tabChanges)
+		}
+		if drift.Untouched > 0 {
+			add("untouched", fmt.Sprintf("%d planned files remain unchanged", drift.Untouched), attentionReview, tabChanges)
+		}
+	}
+	changedIntegrations := 0
+	for _, item := range snapshot.Projection.Integrations {
+		if item.Precision != review.PrecisionPlanned && strings.TrimSpace(item.Change) != "" {
+			changedIntegrations++
+		}
+	}
+	if changedIntegrations > 0 {
+		add("integration", fmt.Sprintf("%d existing-code integrations intersect changed files", changedIntegrations), attentionReview, tabIntegration)
+	}
+	modified, failing, stale := 0, 0, 0
+	for _, item := range snapshot.Evidence.Items {
+		if item.Category == evidence.CategoryModifiedExisting {
+			modified++
+		}
+		if item.Automated && !item.Passing {
+			failing++
+		}
+		if !item.Fresh {
+			stale++
+		}
+	}
+	if modified > 0 {
+		add("modified-tests", fmt.Sprintf("%d existing tests were modified during implementation", modified), attentionReview, tabEvidence)
+	}
+	if failing > 0 {
+		add("failing-evidence", fmt.Sprintf("%d automated evidence items are not passing", failing), attentionReview, tabEvidence)
+	}
+	if stale > 0 {
+		add("stale-evidence", fmt.Sprintf("%d evidence items were recorded against a different worktree", stale), attentionReview, tabEvidence)
+	}
+	if len(snapshot.Evidence.Items) == 0 {
+		add("no-evidence", "No evidence has been recorded for this change.", attentionReview, tabEvidence)
+	}
 	unreviewed := 0
-	for _, criterion := range m.snap.Criteria {
+	for _, criterion := range snapshot.Criteria {
 		if !criterion.Checked {
 			unreviewed++
 		}
 	}
-	return unreviewed
+	if unreviewed > 0 {
+		noun := "criterion has"
+		if unreviewed > 1 {
+			noun = "criteria have"
+		}
+		add("acceptance", fmt.Sprintf("%d acceptance %s not been reviewed", unreviewed, noun), attentionReview, tabEvidence)
+	}
+	if snapshot.Projection.Stats.Files > overviewLargeDriftFiles {
+		add("large-baseline-drift", fmt.Sprintf("%d files changed since baseline; the review may include unrelated work", snapshot.Projection.Stats.Files), attentionReview, tabChanges)
+	}
+	return items
 }
 
 var findReviewContext = discovery.Find
@@ -987,17 +1059,6 @@ func fileStatusMark(status review.FileStatus) string {
 		return "+"
 	}
 	return "!"
-}
-
-func previewRows(rows []string, limit int, empty string) []string {
-	if len(rows) == 0 {
-		return []string{uiMutedStyle.Render("  " + empty)}
-	}
-	if len(rows) > limit {
-		remaining := len(rows) - limit
-		return append(rows[:limit], uiMutedStyle.Render(fmt.Sprintf("  … %d more", remaining)))
-	}
-	return rows
 }
 
 func emptyDash(value string) string {

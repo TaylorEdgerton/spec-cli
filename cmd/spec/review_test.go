@@ -124,6 +124,127 @@ func newReviewFixtureModel(t *testing.T, plan *state.StoredChangePlan) *reviewMo
 
 func reviewPlain(model *reviewModel) string { return ansi.Strip(model.View().Content) }
 
+func setReviewCursorByID(t *testing.T, model *reviewModel, id string) {
+	t.Helper()
+	for index, item := range model.screen().selectableItems() {
+		if item.ID == id {
+			model.cursors[model.tab] = index
+			return
+		}
+	}
+	t.Fatalf("review item %q is unavailable: %v", id, model.screen().selectableItemIDs())
+}
+
+func TestReviewUsesExactlyFiveViewsWithSummaryFirst(t *testing.T) {
+	want := []string{"Summary", "Changes", "Integration", "Evidence", "Diff"}
+	if !reflect.DeepEqual(reviewTabLabels, want) {
+		t.Fatalf("review views = %v, want %v", reviewTabLabels, want)
+	}
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	if model.tab != tabSummary {
+		t.Fatalf("initial review view = %v, want Summary", model.tab)
+	}
+	original := model.snap
+	for _, label := range want {
+		plain := reviewPlain(model)
+		if !strings.Contains(plain, "["+label+"]") {
+			t.Fatalf("active view %q not rendered:\n%s", label, plain)
+		}
+		model.Update(key(tea.KeyTab, ""))
+	}
+	if model.tab != tabSummary || !reflect.DeepEqual(model.snap, original) {
+		t.Fatalf("view cycling changed refreshed snapshot or did not wrap: tab=%v", model.tab)
+	}
+}
+
+func TestReviewAttentionProjectionIsDeterministicAndRoutesToOwningViews(t *testing.T) {
+	snapshot := reviewSnapshotFixture(reviewPlanFixture())
+	snapshot.Projection.Stats.Files = 13
+	snapshot.Evidence.Items = append(snapshot.Evidence.Items,
+		evidence.Item{ID: "modified", Name: "TestModified", Category: evidence.CategoryModifiedExisting, Automated: true, Passing: true, Fresh: true},
+		evidence.Item{ID: "failing", Name: "TestFailing", Category: evidence.CategoryExisting, Automated: true, Passing: false, Fresh: true},
+	)
+	items := projectReviewAttention(snapshot)
+	wantIDs := []string{"additional", "untouched", "integration", "modified-tests", "failing-evidence", "stale-evidence", "large-baseline-drift"}
+	for _, id := range wantIDs {
+		found := false
+		for _, item := range items {
+			if item.ID == id {
+				found = true
+				if id == "additional" && item.Kind != attentionNeutral {
+					t.Fatalf("additional files were framed as %q, want neutral", item.Kind)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("attention projection missing %q: %+v", id, items)
+		}
+	}
+	if again := projectReviewAttention(snapshot); !reflect.DeepEqual(items, again) {
+		t.Fatalf("attention projection is not deterministic:\n%+v\n%+v", items, again)
+	}
+	for index, attention := range items {
+		model := newReviewModel(t.TempDir(), snapshot)
+		model.record = func(string, state.TimelineEvent) error { return nil }
+		model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		model.cursors[tabSummary] = index
+		if plain := reviewPlain(model); !strings.Contains(plain, attention.Label) || !strings.Contains(plain, "Complete Spec") {
+			t.Fatalf("compact Summary hid selected attention %q or decisions:\n%s", attention.ID, plain)
+		}
+		model.Update(key(tea.KeyEnter, ""))
+		if model.tab != attention.Target {
+			t.Fatalf("attention %q routed to %s, want %s", attention.ID, reviewTabLabels[model.tab], reviewTabLabels[attention.Target])
+		}
+	}
+
+	model := newReviewModel(t.TempDir(), snapshot)
+	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	writes := 0
+	model.record = func(string, state.TimelineEvent) error { writes++; return nil }
+	model.Update(key(tea.KeyDown, ""))
+	if writes != 0 {
+		t.Fatalf("attention selection wrote %d events", writes)
+	}
+	model.cursors[tabSummary] = 0
+	model.Update(key(tea.KeyEnter, ""))
+	if model.tab != tabChanges || writes != 0 {
+		t.Fatalf("additional attention routed to tab=%v with %d writes", model.tab, writes)
+	}
+}
+
+func TestReviewSummaryShowsHierarchyAndEmptyViewsExplainMissingFacts(t *testing.T) {
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	plain := reviewPlain(model)
+	assertTextOrder(t, plain, "Original intent", "Actual change", "Plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
+	for _, expected := range []string{"Add an option to disable automatic indexing", "4", "+38", "-6", "Matched 2", "Additional 2", "Existing tests", "New tests"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("summary missing %q:\n%s", expected, plain)
+		}
+	}
+	for _, detail := range []string{"config/config.go", "ensureIndex", "TestAutoIndexCanBeDisabled"} {
+		if strings.Contains(plain, detail) {
+			t.Fatalf("summary dumped detail %q instead of progressively disclosing it:\n%s", detail, plain)
+		}
+	}
+
+	empty := newReviewModel(t.TempDir(), reviewSnapshot{RefreshedAt: time.Now()})
+	empty.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	if summary := reviewPlain(empty); !strings.Contains(summary, "No implementation plan was submitted") || !strings.Contains(summary, "No evidence has been recorded") {
+		t.Fatalf("empty summary is not explanatory:\n%s", summary)
+	}
+	for tab, expected := range map[reviewTab]string{
+		tabChanges:     "No file changes",
+		tabIntegration: "No declared or discovered relationships",
+		tabEvidence:    "No evidence has been recorded",
+		tabDiff:        "No diff is available",
+	} {
+		empty.tab = tab
+		if plain := reviewPlain(empty); !strings.Contains(plain, expected) {
+			t.Fatalf("%s empty view missing %q:\n%s", reviewTabLabels[tab], expected, plain)
+		}
+	}
+}
+
 func TestReviewTabOrderMatchesKeyboardOrderAndSelectionPersistsPerTab(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
 	for index, label := range reviewTabLabels {
@@ -131,31 +252,27 @@ func TestReviewTabOrderMatchesKeyboardOrderAndSelectionPersistsPerTab(t *testing
 			t.Fatalf("tab %d = %d", index, model.tab)
 		}
 		plain := reviewPlain(model)
-		if model.tab == tabStats {
-			if !strings.Contains(plain, "Change Summary") {
-				t.Fatalf("summary state not rendered:\n%s", plain)
-			}
-		} else if !strings.Contains(plain, "["+label+"]") {
+		if !strings.Contains(plain, "["+label+"]") {
 			t.Fatalf("active tab %q not rendered:\n%s", label, plain)
 		}
 		model.Update(key(tea.KeyTab, ""))
 	}
-	if model.tab != tabOverview {
+	if model.tab != tabSummary {
 		t.Fatalf("tab cycle did not wrap: %d", model.tab)
 	}
 
-	model.tab = tabFiles
+	model.tab = tabChanges
 	model.Update(key(tea.KeyDown, ""))
 	model.Update(key(tea.KeyDown, ""))
-	filesCursor := model.cursors[tabFiles]
+	filesCursor := model.cursors[tabChanges]
 	if filesCursor != 2 {
 		t.Fatalf("files cursor = %d", filesCursor)
 	}
 	model.tab = tabIntegration
 	model.Update(key(tea.KeyDown, ""))
-	model.tab = tabFiles
-	if model.cursors[tabFiles] != filesCursor {
-		t.Fatalf("files cursor was reset to %d", model.cursors[tabFiles])
+	model.tab = tabChanges
+	if model.cursors[tabChanges] != filesCursor {
+		t.Fatalf("changes cursor was reset to %d", model.cursors[tabChanges])
 	}
 	if model.cursors[tabIntegration] != 1 {
 		t.Fatalf("integration cursor = %d", model.cursors[tabIntegration])
@@ -169,7 +286,7 @@ func TestReviewFiltersAndSelectionNeverMutateSavedPlanOrEvidence(t *testing.T) {
 	if !originalEvidence {
 		t.Fatal("evidence fixture is not reproducible")
 	}
-	model.tab = tabFiles
+	model.tab = tabChanges
 	for range 5 {
 		model.Update(key('f', "f"))
 		model.Update(key(tea.KeyDown, ""))
@@ -189,12 +306,11 @@ func TestReviewTabsRenderTheirOwnContract(t *testing.T) {
 		tab      reviewTab
 		expected []string
 	}{
-		{tabOverview, []string{"Add an option to disable automatic indexing", "Disable automatic indexing", "Changed files", "Evidence"}},
-		{tabFiles, []string{"Matched", "Additional", "untouched", "config/config.go", "cmd/spec/config.go", "old_indexer.go"}},
+		{tabSummary, []string{"Add an option to disable automatic indexing", "Disable automatic indexing", "Actual change", "Review attention", "Evidence"}},
+		{tabChanges, []string{"Matched", "Additional", "untouched", "config/config.go", "cmd/spec/config.go", "old_indexer.go"}},
 		{tabIntegration, []string{"Existing code interaction", "ensureIndex", "Config.AutoIndexEnabled", "precise", "structural", "planned"}},
 		{tabEvidence, []string{"TestAutoIndexCanBeDisabled", "TestConfigAutoIndexFalse", "baseline", "manual", "stale"}},
 		{tabDiff, []string{"indexer/indexer.go", "files", "Existing symbol"}},
-		{tabStats, []string{"Files", "Lines", "Reviewability", "Complete Spec", "Request Changes"}},
 	}
 	for _, test := range tests {
 		t.Run(reviewTabLabels[test.tab], func(t *testing.T) {
@@ -215,26 +331,22 @@ func TestReviewTabsRenderTheirOwnContract(t *testing.T) {
 	}
 }
 
-func TestReviewOverviewFollowsTheInformationHierarchy(t *testing.T) {
+func TestReviewSummaryFollowsTheInformationHierarchy(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
 	assertTextOrder(t, reviewPlain(model),
 		"Original intent", "Add an option to disable automatic indexing",
 		"Implementation plan", "Disable automatic indexing",
-		"Actual change", "Changed files",
+		"Actual change", "Files",
 		"Plan vs actual", "Matched",
-		"Existing code integrations", "ensureIndex",
-		"Implementation", "cmd/spec/config.go",
-		"Evidence", "Diff",
+		"Review attention", "Evidence", "Complete Spec", "Request Changes",
 	)
 
 	withoutPlan := newReviewFixtureModel(t, nil)
 	plain := reviewPlain(withoutPlan)
-	for _, absent := range []string{"Implementation plan", "Plan vs actual"} {
-		if strings.Contains(plain, absent) {
-			t.Fatalf("absent plan still rendered %q:\n%s", absent, plain)
-		}
+	if strings.Contains(plain, "Plan vs actual") {
+		t.Fatalf("absent plan still rendered drift:\n%s", plain)
 	}
-	for _, expected := range []string{"Original intent", "Actual change", "Changed files", "Evidence"} {
+	for _, expected := range []string{"Original intent", "No implementation plan was submitted", "Actual change", "Evidence"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("plan-free overview missing %q:\n%s", expected, plain)
 		}
@@ -282,7 +394,7 @@ func TestReviewOnlyExplicitRefreshReReadsGitAndRecordsIt(t *testing.T) {
 
 func TestReviewFilesTabCountsSelectsAndHandsOffToDiff(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
-	model.tab = tabFiles
+	model.tab = tabChanges
 	plain := reviewPlain(model)
 	for _, expected := range []string{"Matched 2", "Additional 2", "untouched 1", "planned and changed", "config/config.go", "add AutoIndexEnabled"} {
 		if !strings.Contains(plain, expected) {
@@ -297,7 +409,7 @@ func TestReviewFilesTabCountsSelectsAndHandsOffToDiff(t *testing.T) {
 	}
 	model.filter = ""
 
-	model.cursors[tabFiles] = 0
+	model.cursors[tabChanges] = 0
 	selected, ok := model.selectedRow()
 	if !ok || !strings.Contains(selected.ID, "config/config.go") {
 		t.Fatalf("selected row = %+v ok=%v", selected, ok)
@@ -312,7 +424,7 @@ func TestReviewFilesTabCountsSelectsAndHandsOffToDiff(t *testing.T) {
 
 	empty := newReviewModel(t.TempDir(), reviewSnapshot{})
 	empty.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
-	empty.tab = tabFiles
+	empty.tab = tabChanges
 	if plain := reviewPlain(empty); !strings.Contains(plain, "No file changes") {
 		t.Fatalf("empty files tab did not explain itself:\n%s", plain)
 	}
@@ -423,16 +535,16 @@ func TestReviewDiffTabMovesFilesAndHunksAndAnnotatesThem(t *testing.T) {
 	}
 }
 
-func TestReviewStatsTabShowsTotalsThresholdsAndExplicitDecisions(t *testing.T) {
+func TestReviewSummaryShowsTotalsAttentionAndExplicitDecisions(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
-	model.tab = tabStats
+	model.tab = tabSummary
 	var recorded []state.TimelineEvent
 	model.record = func(_ string, event state.TimelineEvent) error {
 		recorded = append(recorded, event)
 		return nil
 	}
 	plain := reviewPlain(model)
-	for _, expected := range []string{"4", "+38", "-6", "GOOD", "6 files", "300", "Review attention", "2 files changed outside the original plan", "Complete Spec", "Request Changes"} {
+	for _, expected := range []string{"4", "+38", "-6", "GOOD", "Review attention", "2 additional files changed outside the accepted plan", "Complete Spec", "Request Changes"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("stats tab missing %q:\n%s", expected, plain)
 		}
@@ -447,7 +559,7 @@ func TestReviewStatsTabShowsTotalsThresholdsAndExplicitDecisions(t *testing.T) {
 		t.Fatalf("selection recorded a decision: %q %+v", model.decision, recorded)
 	}
 
-	model.cursors[tabStats] = 1
+	setReviewCursorByID(t, model, "review.request_changes")
 	model.Update(key(tea.KeyEnter, ""))
 	if model.decision != decisionChanges || len(recorded) != 1 || recorded[0].Type != state.TimelineChangesRequested {
 		t.Fatalf("request changes = %q recorded=%+v", model.decision, recorded)
@@ -455,7 +567,8 @@ func TestReviewStatsTabShowsTotalsThresholdsAndExplicitDecisions(t *testing.T) {
 	if model.snap.Plan == nil || len(model.snap.Evidence.Items) == 0 {
 		t.Fatal("request changes discarded plan or evidence facts")
 	}
-	model.cursors[tabStats] = 0
+	model.done, model.nav = false, actionNone
+	setReviewCursorByID(t, model, "review.complete")
 	model.Update(key(tea.KeyEnter, ""))
 	if model.decision != decisionComplete || len(recorded) != 2 || recorded[1].Type != state.TimelineReviewDecision {
 		t.Fatalf("complete = %q recorded=%+v", model.decision, recorded)
@@ -466,8 +579,8 @@ func TestReviewRendersInsideSupportedWindowsAndExplainsSmallerOnes(t *testing.T)
 	for _, size := range []struct{ width, height int }{{80, 24}, {120, 34}} {
 		model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 		model.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
-		for tab := tabOverview; tab <= tabStats; tab++ {
-			model.tab = tab
+		for tab := range reviewTabLabels {
+			model.tab = reviewTab(tab)
 			content := model.View().Content
 			if got := lipgloss.Width(content); got > size.width {
 				t.Fatalf("%s at %dx%d overflowed to width %d", reviewTabLabels[tab], size.width, size.height, got)
@@ -485,7 +598,7 @@ func TestReviewRendersInsideSupportedWindowsAndExplainsSmallerOnes(t *testing.T)
 		t.Fatalf("undersized terminal message missing:\n%s", plain)
 	}
 	small.Update(key(tea.KeyTab, ""))
-	if small.tab != tabFiles {
+	if small.tab != tabChanges {
 		t.Fatalf("navigation was corrupted in an undersized terminal: tab=%d", small.tab)
 	}
 }
