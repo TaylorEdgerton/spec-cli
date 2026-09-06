@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"image/color"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,14 +146,6 @@ func newContextExplorer(root, query string, results []discovery.Result) *context
 		model.setResults(results)
 	}
 	return model
-}
-
-func runContextExplorer(root, query string, results []discovery.Result, input io.Reader, output io.Writer) (bool, error) {
-	final, err := tea.NewProgram(newContextExplorer(root, query, results), tea.WithInput(input), tea.WithOutput(output)).Run()
-	if err != nil {
-		return false, err
-	}
-	return final.(*contextExplorerModel).stopped, nil
 }
 
 func (model *contextExplorerModel) Init() tea.Cmd { return nil }
@@ -672,17 +663,15 @@ func (model *contextExplorerModel) renderExplore(width, height int) string {
 	available := max(1, height-3) // one content row is reserved for the legend
 	rows := model.exploreRows()
 	selectedRow := explorerSelectedRow(rows, model.cursor)
-	start := visibleWindow(selectedRow, len(rows), available)
-	end := min(len(rows), start+available)
-	var lines []string
-	for index := start; index < end; index++ {
-		row := rows[index]
+	renderedRows := make([]string, 0, len(rows))
+	for _, row := range rows {
 		line := ansi.Truncate(row.text, innerWidth, "…")
 		if row.itemIndex >= 0 && row.itemIndex == model.cursor {
 			line = uiSelectedRow(line, innerWidth)
 		}
-		lines = append(lines, line)
+		renderedRows = append(renderedRows, line)
 	}
+	lines, _ := (screenViewport{Height: available}).visible(renderedRows, selectedRow)
 	if len(model.items) == 0 {
 		lines = append(lines, uiMutedStyle.Render("No likely context found. Press / to try another query."))
 	}
@@ -891,24 +880,10 @@ func (model *contextExplorerModel) renderPreview(width, height int) string {
 	}
 	start = clamp(start, 0, max(0, len(model.preview.highlighted)-available))
 	end := min(len(model.preview.highlighted), start+available)
-	digits := len(fmt.Sprintf("%d", max(1, end)))
 	var lines []string
 	for index := start; index < end; index++ {
-		number := fmt.Sprintf("%*d", digits, index+1)
-		marker := " "
 		current := index+1 == model.preview.line
-		if current {
-			marker, number = uiLineStyle.Render("›"), uiLineStyle.Render(number)
-		} else {
-			number = uiMutedStyle.Render(number)
-		}
-		gutter := marker + " " + number + " " + uiMutedStyle.Render("│") + " "
-		codeWidth := max(1, innerWidth-lipgloss.Width(gutter))
-		line := gutter + ansi.Truncate(model.preview.highlighted[index], codeWidth, "…")
-		if current {
-			line = uiCurrentStyle.Width(innerWidth).Render(line)
-		}
-		lines = append(lines, line)
+		lines = append(lines, uiCodeLine(index+1, current, model.preview.highlighted[index], innerWidth))
 	}
 	for len(lines) < available {
 		lines = append(lines, "")
@@ -1129,14 +1104,6 @@ func explorerChip(kind string) string {
 		foreground = uiMuted
 	}
 	return uiBadge(label, foreground)
-}
-
-func visibleWindow(cursor, total, available int) int {
-	if total <= available || cursor < available {
-		return 0
-	}
-	start := cursor - available + 1
-	return min(start, total-available)
 }
 
 func uniqueReasons(reasons []string) []string {
