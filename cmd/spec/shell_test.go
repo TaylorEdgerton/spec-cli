@@ -17,20 +17,23 @@ import (
 
 func TestShellRoutesEveryForwardActionAndReturnsWithBack(t *testing.T) {
 	for action, want := range map[string]shellScreen{
-		actionDefinition: screenDefinition,
-		actionOverview:   screenOverview,
-		actionPlan:       screenPlan,
-		actionReview:     screenReview,
-		actionSummary:    screenSummary,
-		actionEvidence:   screenReview,
-		actionHistory:    screenHistory,
-		actionComplete:   screenHistory,
-		actionCompletion: screenComplete,
-		actionChanges:    screenBack,
-		actionBack:       screenBack,
-		actionQuit:       screenExit,
-		actionNone:       screenStay,
-		"unknown":        screenStay,
+		actionDefinition:    screenDefinition,
+		actionOverview:      screenOverview,
+		actionPlan:          screenPlan,
+		actionReview:        screenReview,
+		actionSummary:       screenReview,
+		actionReviewChanges: screenReview,
+		actionIntegration:   screenReview,
+		actionDiff:          screenReview,
+		actionEvidence:      screenReview,
+		actionHistory:       screenHistory,
+		actionComplete:      screenHistory,
+		actionCompletion:    screenComplete,
+		actionChanges:       screenBack,
+		actionBack:          screenBack,
+		actionQuit:          screenExit,
+		actionNone:          screenStay,
+		"unknown":           screenStay,
 	} {
 		if got := screenForAction(action); got != want {
 			t.Fatalf("screenForAction(%q) = %q, want %q", action, got, want)
@@ -52,7 +55,7 @@ func TestShellScreensShareExitBackAndHelpKeys(t *testing.T) {
 			"plan":       newPlanModel(t.TempDir(), reviewPlanFixture()),
 			"review":     newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture())),
 			"complete":   newCompletionModel(reviewSnapshotFixture(reviewPlanFixture())),
-			"history":    newHistoryModel(t.TempDir(), historyFixture(), false),
+			"history":    newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false),
 		}
 	}
 	navigationOf := func(model any) string {

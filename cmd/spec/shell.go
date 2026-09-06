@@ -12,7 +12,6 @@ const (
 	screenOverview   shellScreen = "overview"
 	screenPlan       shellScreen = "plan"
 	screenReview     shellScreen = "review"
-	screenSummary    shellScreen = "summary"
 	screenComplete   shellScreen = "complete"
 	screenHistory    shellScreen = "history"
 	screenExplore    shellScreen = "explore"
@@ -23,30 +22,33 @@ const (
 )
 
 const (
-	actionNone       = ""
-	actionBack       = "back"
-	actionHome       = "home"
-	actionQuit       = "quit"
-	actionInitialize = "initialize"
-	actionNew        = "new"
-	actionResume     = "resume"
-	actionExplore    = "explore"
-	actionRecent     = "recent"
-	actionDocuments  = "documents"
-	actionREADME     = "create-readme"
-	actionRunbook    = "create-runbook"
-	actionPrompt     = "copy-implementation-prompt"
-	actionBaseline   = "baseline-details"
-	actionDefinition = "definition"
-	actionOverview   = "overview"
-	actionPlan       = "plan"
-	actionReview     = "review"
-	actionSummary    = "summary"
-	actionEvidence   = "evidence"
-	actionHistory    = "history"
-	actionComplete   = "complete"
-	actionCompletion = "completion-sign-off"
-	actionChanges    = "request-changes"
+	actionNone          = ""
+	actionBack          = "back"
+	actionHome          = "home"
+	actionQuit          = "quit"
+	actionInitialize    = "initialize"
+	actionNew           = "new"
+	actionResume        = "resume"
+	actionExplore       = "explore"
+	actionRecent        = "recent"
+	actionDocuments     = "documents"
+	actionREADME        = "create-readme"
+	actionRunbook       = "create-runbook"
+	actionPrompt        = "copy-implementation-prompt"
+	actionBaseline      = "baseline-details"
+	actionDefinition    = "definition"
+	actionOverview      = "overview"
+	actionPlan          = "plan"
+	actionReview        = "review"
+	actionSummary       = "summary"
+	actionReviewChanges = "review-changes"
+	actionIntegration   = "review-integration"
+	actionDiff          = "review-diff"
+	actionEvidence      = "evidence"
+	actionHistory       = "history"
+	actionComplete      = "complete"
+	actionCompletion    = "completion-sign-off"
+	actionChanges       = "request-changes"
 )
 
 func screenForAction(action string) shellScreen {
@@ -67,10 +69,8 @@ func screenForAction(action string) shellScreen {
 		return screenOverview
 	case actionPlan:
 		return screenPlan
-	case actionReview, actionEvidence:
+	case actionReview, actionSummary, actionReviewChanges, actionIntegration, actionEvidence, actionDiff:
 		return screenReview
-	case actionSummary:
-		return screenSummary
 	case actionHistory:
 		return screenHistory
 	case actionExplore:

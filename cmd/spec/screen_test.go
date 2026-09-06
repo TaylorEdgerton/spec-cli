@@ -124,6 +124,16 @@ func TestSharedProseRendererWrapsMarkdownLikeContentWithoutLosingText(t *testing
 	}
 }
 
+func TestSharedProsePreservesLeadingPunctuationThatIsNotAListMarker(t *testing.T) {
+	plain := ansi.Strip(uiProse("--flag remains literal\n- actual list item\n* second item", 32))
+	if !strings.Contains(plain, "--flag remains literal") || strings.Contains(plain, "• -flag") {
+		t.Fatalf("leading punctuation was treated as a list marker:\n%s", plain)
+	}
+	if strings.Count(plain, "•") != 2 {
+		t.Fatalf("actual list delimiters were not preserved:\n%s", plain)
+	}
+}
+
 func TestCanonicalScreenExplainsEmptySections(t *testing.T) {
 	screen := canonicalScreen{Sections: []screenSection{{
 		ID: "evidence", Title: "Evidence", EmptyReason: "No evidence has been recorded for this Spec.",

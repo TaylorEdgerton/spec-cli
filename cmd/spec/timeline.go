@@ -114,6 +114,7 @@ func timelineLabel(kind string) string {
 		string(state.TimelineReviewDecision):     "Review decision",
 		string(state.TimelineChangesRequested):   "Changes requested",
 		string(state.TimelineSpecCompleted):      "Spec completed",
+		string(state.TimelineFollowUpStarted):    "Follow-up started",
 	}
 	if label, ok := labels[kind]; ok {
 		return label + " (" + kind + ")"
