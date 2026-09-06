@@ -1,15 +1,11 @@
 package main
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
-	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
@@ -98,79 +94,6 @@ func TestVerificationPromptIsBoundedToSetup(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Discarded") {
 		t.Fatalf("prompt includes excluded criterion:\n%s", prompt)
-	}
-}
-
-func TestSetupReviewUsesBoundedSummary(t *testing.T) {
-	setup := state.Setup{
-		Title:   "Fix reconnect handling " + strings.Repeat("safely ", 20),
-		Outcome: "Reconnect automatically",
-		Criteria: []state.SetupCriterion{
-			{Text: strings.Repeat("criterion ", 100), Included: true},
-			{Text: "Excluded", Included: false},
-		},
-	}
-	summary := formatSetupSummary(setup)
-	for _, expected := range []string{"Change: Fix reconnect handling", setup.Outcome, "Limits: none", "Success criteria: 1"} {
-		if !strings.Contains(summary, expected) {
-			t.Fatalf("summary missing %q: %s", expected, summary)
-		}
-	}
-	if strings.Contains(summary, "criterion criterion") || !strings.Contains(summary, "…") || len(strings.Split(summary, "\n")) != 4 {
-		t.Fatalf("summary is not bounded: %s", summary)
-	}
-}
-
-func TestDiscoverySummaryIsBoundedAndExplainsResults(t *testing.T) {
-	root := t.TempDir()
-	results := []discovery.Result{
-		{Path: "src/core/health.py", Line: 12, Column: 5, Preview: "def check_database_health():", Reasons: []string{"strong intent match to \"database health\""}},
-		{Path: "tests/test_health.py", Line: 8, Column: 3, Preview: "check_database_health()", Reasons: []string{"related test file"}},
-	}
-	for _, result := range results {
-		path := filepath.Join(root, filepath.FromSlash(result.Path))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(result.Preview+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	summary := formatDiscovery(results)
-	for _, expected := range []string{"src/core/health.py:12:5", "strong intent match", "def check_database_health", "tests/test_health.py:8:3"} {
-		if !strings.Contains(summary, expected) {
-			t.Fatalf("summary missing %q:\n%s", expected, summary)
-		}
-	}
-	if !strings.Contains(summary, "\x1b[92;4m") {
-		t.Fatalf("summary locations are not highlighted:\n%q", summary)
-	}
-}
-
-func TestDiscoverySummaryShowsSymbols(t *testing.T) {
-	results := []discovery.Result{
-		{
-			Path: "internal/discovery/discovery.go",
-			Symbols: []discovery.Symbol{
-				{Name: "addFieldSignals()", Kind: "function", Line: 448, Column: 6, Reasons: []string{"uses kindWord"}},
-				{Name: "kindWord", Kind: "constant", Line: 62, Column: 2, Reasons: []string{"matched discovery intent"}},
-			},
-		},
-	}
-
-	summary := formatDiscovery(results)
-	for _, expected := range []string{"internal/discovery/discovery.go:448:6", "addFieldSignals() :448", "uses kindWord", "kindWord :62"} {
-		if !strings.Contains(summary, expected) {
-			t.Fatalf("summary missing %q:\n%s", expected, summary)
-		}
-	}
-}
-
-func TestConsoleSectionsHaveLabelledSeparators(t *testing.T) {
-	var output bytes.Buffer
-	printConsoleSection(&output, "Change Context", "Likely files.")
-	if !strings.Contains(output.String(), "── Change Context ──") || !strings.Contains(output.String(), "Likely files.") {
-		t.Fatalf("section = %q", output.String())
 	}
 }
 

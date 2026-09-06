@@ -89,6 +89,7 @@ type reviewModel struct {
 	help          bool
 	nav           string
 	viewport      int
+	listViewports map[reviewTab]int
 
 	refresh  func(string) (reviewSnapshot, error)
 	record   func(string, state.TimelineEvent) error
@@ -98,7 +99,7 @@ type reviewModel struct {
 
 func newReviewModel(root string, snap reviewSnapshot) *reviewModel {
 	return &reviewModel{
-		root: root, snap: snap, cursors: map[reviewTab]int{},
+		root: root, snap: snap, cursors: map[reviewTab]int{}, listViewports: map[reviewTab]int{},
 		refresh: loadReviewSnapshot,
 		record:  recordReviewEvent,
 		open:    openInVSCode,
@@ -209,12 +210,16 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 	case "pgup":
 		if m.diffFocused {
 			m.scrollDiff(-max(1, m.focusedCodeCapacity()-1))
+		} else if m.tab == tabChanges || m.tab == tabDiff {
+			m.movePage(-1)
 		} else {
 			m.viewport = max(0, m.viewport-max(1, m.height/2))
 		}
 	case "pgdown":
 		if m.diffFocused {
 			m.scrollDiff(max(1, m.focusedCodeCapacity()-1))
+		} else if m.tab == tabChanges || m.tab == tabDiff {
+			m.movePage(1)
 		} else {
 			m.viewport += max(1, m.height/2)
 		}
@@ -275,6 +280,17 @@ func (m *reviewModel) move(delta int) {
 	m.hunk, m.diffScroll, m.status = 0, 0, ""
 }
 
+func (m *reviewModel) movePage(direction int) {
+	count := len(m.screen().selectableItems())
+	if count == 0 {
+		return
+	}
+	step := max(2, m.fileListCapacity()-1)
+	m.cursors[m.tab] = clamp(m.cursors[m.tab]+direction*step, 0, count-1)
+	m.listViewports[m.tab] = max(0, m.listViewports[m.tab]+direction*step)
+	m.hunk, m.diffScroll, m.status = 0, 0, ""
+}
+
 func (m *reviewModel) moveHunk(delta int) {
 	count := len(m.snap.Hunks[m.diffFile()])
 	if m.tab != tabDiff || count == 0 {
@@ -305,7 +321,7 @@ func (m *reviewModel) cycleFilter() {
 			break
 		}
 	}
-	m.cursors[tabChanges], m.status = 0, ""
+	m.cursors[tabChanges], m.listViewports[tabChanges], m.status = 0, 0, ""
 }
 
 func (m *reviewModel) showDiff() {
@@ -574,7 +590,7 @@ func (m *reviewModel) View() tea.View {
 	)
 	rendered := strings.Join(body, "\n")
 	anchor := ""
-	if item, ok := m.screen().selectedItem(); ok {
+	if item, ok := m.screen().selectedItem(); ok && m.tab != tabChanges && m.tab != tabDiff {
 		anchor = item.Label
 	}
 	rendered, m.viewport = uiViewportBody(rendered, uiWorkflowBodyHeight(height, header), m.viewport, anchor)
@@ -585,6 +601,9 @@ func (m *reviewModel) footer() string { return uiKeyHints(m.hints(), "  ") }
 
 func (m *reviewModel) hints() [][2]string {
 	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}}
+	if (m.tab == tabChanges || m.tab == tabDiff) && !m.diffFocused {
+		hints = append(hints, [2]string{"PgUp/PgDn", "page"})
+	}
 	if m.tab != tabDiff {
 		hints = append(hints, [2]string{"enter", "action"})
 	}
@@ -650,29 +669,33 @@ func (m *reviewModel) filesBody(width int) []string {
 	if width >= reviewSplitWidth {
 		leftWidth := max(36, contentWidth*2/5)
 		rightWidth := max(24, contentWidth-leftWidth)
-		leftBody := filter + m.changeList(leftWidth-4, false)
+		leftBody, listRange := m.changeList(leftWidth-4, false)
+		leftBody = filter + leftBody
 		rightBody := m.changeDetail(selected, rightWidth-4, false)
 		height := max(lipgloss.Height(leftBody), lipgloss.Height(rightBody)) + 2
 		body := lipgloss.JoinHorizontal(lipgloss.Top,
-			uiPanel(leftWidth, height, uiBorder, "Files", "", leftBody),
+			uiPanel(leftWidth, height, uiBorder, "Files", listRange, leftBody),
 			uiPanel(rightWidth, height, uiYellow, "Change detail", "", rightBody),
 		)
 		return strings.Split(body, "\n")
 	}
-	listBody := filter + m.changeList(contentWidth-4, true)
+	listBody, listRange := m.changeList(contentWidth-4, true)
+	listBody = filter + listBody
 	detailBody := m.changeDetail(selected, contentWidth-4, true)
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		uiPanel(contentWidth, lipgloss.Height(listBody)+2, uiBorder, "Files", "", listBody),
+		uiPanel(contentWidth, lipgloss.Height(listBody)+2, uiBorder, "Files", listRange, listBody),
 		uiPanel(contentWidth, lipgloss.Height(detailBody)+2, uiYellow, "Selected change", "", detailBody),
 	)
 	return strings.Split(body, "\n")
 }
 
-func (m *reviewModel) changeList(width int, compact bool) string {
+func (m *reviewModel) changeList(width int, compact bool) (string, string) {
 	selectedID := ""
 	if item, ok := m.screen().selectedItem(); ok {
 		selectedID = item.ID
 	}
+	items := m.screen().selectableItems()
+	selectedIndex := clamp(m.cursors[tabChanges], 0, len(items)-1)
 	if compact {
 		matched, additional, untouched := 0, 0, 0
 		for _, file := range m.snap.Projection.Files {
@@ -685,16 +708,18 @@ func (m *reviewModel) changeList(width int, compact bool) string {
 				untouched++
 			}
 		}
-		lines := []string{fmt.Sprintf("Matched %d · Additional %d · Planned but untouched %d", matched, additional, untouched)}
-		if item, ok := m.screen().selectedItem(); ok {
-			file := item.Preview.(review.FileReview)
-			lines = append(lines, uiSelectedRow("> "+fileStatusMark(file.Status)+" "+ansi.Truncate(file.Path, max(8, width-4), "…"), 0))
-		}
-		return strings.Join(lines, "\n")
+		file := items[selectedIndex].Preview.(review.FileReview)
+		row := uiSelectedRow("> "+fileStatusMark(file.Status)+" "+ansi.Truncate(file.Path, max(8, width-4), "…"), 0)
+		body := fmt.Sprintf("Matched %d · Additional %d · Planned but untouched %d\n%s", matched, additional, untouched, row)
+		m.listViewports[tabChanges] = selectedIndex
+		return body, uiRangeLabel(selectedIndex, selectedIndex, len(items), "files")
 	}
 	var lines []string
+	var itemLines []int
+	itemIndex := 0
 	for _, section := range m.screen().Sections {
 		lines = append(lines, uiTitleStyle.Render(section.Title))
+		itemLines = append(itemLines, -1)
 		for _, item := range section.Items {
 			file := item.Preview.(review.FileReview)
 			row := fileStatusMark(file.Status) + " " + ansi.Truncate(file.Path, max(8, width-4), "…")
@@ -704,9 +729,15 @@ func (m *reviewModel) changeList(width int, compact bool) string {
 				row = "  " + row
 			}
 			lines = append(lines, row)
+			itemLines = append(itemLines, itemIndex)
+			itemIndex++
 		}
 	}
-	return strings.Join(lines, "\n")
+	selectedLine := selectedItemLine(itemLines, selectedIndex)
+	visible, offset := (screenViewport{Height: m.fileListCapacity(), Offset: m.listViewports[tabChanges]}).visible(lines, selectedLine)
+	m.listViewports[tabChanges] = offset
+	first, last := visibleItemRange(itemLines, offset, len(visible))
+	return strings.Join(visible, "\n"), uiRangeLabel(first, last, len(items), "files")
 }
 
 func (m *reviewModel) changeDetail(file review.FileReview, width int, compact bool) string {
@@ -964,19 +995,19 @@ func (m *reviewModel) diffBody(width int) []string {
 	if width >= reviewSplitWidth {
 		leftWidth := max(34, contentWidth*2/5)
 		rightWidth := max(24, contentWidth-leftWidth)
-		leftBody := m.diffFileList(items, current, leftWidth-4, false)
+		leftBody, listRange := m.diffFileList(items, current, leftWidth-4, false)
 		rightBody := m.diffDetail(file, rightWidth-4, false)
 		height := max(lipgloss.Height(leftBody), lipgloss.Height(rightBody)) + 2
 		body := lipgloss.JoinHorizontal(lipgloss.Top,
-			uiPanel(leftWidth, height, uiBorder, "Files", fmt.Sprintf("%d / %d files", current+1, len(items)), leftBody),
+			uiPanel(leftWidth, height, uiBorder, "Files", listRange, leftBody),
 			uiPanel(rightWidth, height, uiYellow, "Focused hunk", "", rightBody),
 		)
 		return strings.Split(body, "\n")
 	}
-	leftBody := m.diffFileList(items, current, contentWidth-4, true)
+	leftBody, listRange := m.diffFileList(items, current, contentWidth-4, true)
 	rightBody := m.diffDetail(file, contentWidth-4, true)
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		uiPanel(contentWidth, lipgloss.Height(leftBody)+2, uiBorder, "Files", fmt.Sprintf("%d / %d files", current+1, len(items)), leftBody),
+		uiPanel(contentWidth, lipgloss.Height(leftBody)+2, uiBorder, "Files", listRange, leftBody),
 		uiPanel(contentWidth, lipgloss.Height(rightBody)+2, uiYellow, "Focused hunk", "", rightBody),
 	)
 	return strings.Split(body, "\n")
@@ -1009,12 +1040,16 @@ func (m *reviewModel) focusedCodeCapacity() int {
 	return max(1, panelHeight-6)
 }
 
-func (m *reviewModel) diffFileList(items []screenItem, current, width int, compact bool) string {
+func (m *reviewModel) diffFileList(items []screenItem, current, width int, compact bool) (string, string) {
+	if compact {
+		entry := items[current].Preview.(review.FileReview)
+		row := uiSelectedRow("> "+fileStatusMark(entry.Status)+" "+ansi.Truncate(entry.Path, max(8, width-4), "…"), 0)
+		m.listViewports[tabDiff] = current
+		return row, uiRangeLabel(current, current, len(items), "files")
+	}
 	var lines []string
+	var itemLines []int
 	for index, item := range items {
-		if compact && index != current {
-			continue
-		}
 		entry := item.Preview.(review.FileReview)
 		row := fileStatusMark(entry.Status) + " " + ansi.Truncate(entry.Path, max(8, width-4), "…")
 		if index == current {
@@ -1023,13 +1058,48 @@ func (m *reviewModel) diffFileList(items []screenItem, current, width int, compa
 			row = "  " + row
 		}
 		lines = append(lines, row)
+		itemLines = append(itemLines, index)
 	}
-	return strings.Join(lines, "\n")
+	selectedLine := selectedItemLine(itemLines, current)
+	visible, offset := (screenViewport{Height: m.fileListCapacity(), Offset: m.listViewports[tabDiff]}).visible(lines, selectedLine)
+	m.listViewports[tabDiff] = offset
+	first, last := visibleItemRange(itemLines, offset, len(visible))
+	rangeLabel := uiRangeLabel(first, last, len(items), "files")
+	if len(items) <= m.fileListCapacity() {
+		rangeLabel = fmt.Sprintf("%d / %d files", current+1, len(items))
+	}
+	return strings.Join(visible, "\n"), rangeLabel
+}
+
+func (m *reviewModel) fileListCapacity() int {
+	_, height := defaultSize(m.width, m.height)
+	if m.width < reviewSplitWidth {
+		return 1
+	}
+	return max(5, uiWorkflowBodyHeight(height, "Review")-6)
+}
+
+func selectedItemLine(itemLines []int, selected int) int {
+	for line, item := range itemLines {
+		if item == selected {
+			return line
+		}
+	}
+	return -1
 }
 
 func (m *reviewModel) diffDetail(file review.FileReview, width int, compact bool) string {
 	lines := []string{ansi.Truncate(file.Path, width, "…")}
-	lines = append(lines, m.hunkLines(file, width)...)
+	preview := m.hunkLines(file, width)
+	limit := max(4, m.fileListCapacity()-4)
+	if compact {
+		limit = 3
+	}
+	if len(preview) > limit {
+		hidden := len(preview) - limit
+		preview = append(preview[:limit], uiMutedStyle.Render(fmt.Sprintf("… %d more lines · Enter to focus and scroll", hidden)))
+	}
+	lines = append(lines, preview...)
 	if !compact {
 		lines = append(lines, "")
 	}
