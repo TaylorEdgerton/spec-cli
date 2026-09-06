@@ -13,6 +13,7 @@ const (
 	screenPlan       shellScreen = "plan"
 	screenReview     shellScreen = "review"
 	screenSummary    shellScreen = "summary"
+	screenComplete   shellScreen = "complete"
 	screenHistory    shellScreen = "history"
 	screenExplore    shellScreen = "explore"
 	screenDocuments  shellScreen = "documents"
@@ -44,6 +45,7 @@ const (
 	actionEvidence   = "evidence"
 	actionHistory    = "history"
 	actionComplete   = "complete"
+	actionCompletion = "completion-sign-off"
 	actionChanges    = "request-changes"
 )
 
@@ -57,6 +59,8 @@ func screenForAction(action string) shellScreen {
 		return screenBack
 	case actionComplete:
 		return screenHistory
+	case actionCompletion:
+		return screenComplete
 	case actionDefinition:
 		return screenDefinition
 	case actionOverview:

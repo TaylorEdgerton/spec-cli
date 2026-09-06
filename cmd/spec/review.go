@@ -43,9 +43,8 @@ var reviewTabLabels = []string{"Summary", "Changes", "Integration", "Evidence", 
 type reviewDecision string
 
 const (
-	decisionNone     reviewDecision = ""
-	decisionComplete reviewDecision = "complete"
-	decisionChanges  reviewDecision = "request_changes"
+	decisionNone    reviewDecision = ""
+	decisionChanges reviewDecision = "request_changes"
 )
 
 type reviewRow struct{ ID, Label, Detail string }
@@ -80,6 +79,8 @@ type reviewModel struct {
 	tab           reviewTab
 	cursors       map[reviewTab]int
 	hunk          int
+	diffFocused   bool
+	diffScroll    int
 	filter        review.FileStatus
 	status        string
 	decision      reviewDecision
@@ -137,19 +138,20 @@ func (m *reviewModel) screen() canonicalScreen {
 			items = append(items, screenItem{ID: fmt.Sprintf("review.integration.%d", index), Label: item.Symbol, Detail: item.Relationship, Selectable: true, Preview: item})
 		}
 	case tabEvidence:
-		for _, category := range []struct {
-			id, title string
-			category  evidence.Category
-		}{{"existing", "Existing before change", evidence.CategoryExisting}, {"reproduction", "Pre-change reproduction", evidence.CategoryFailThenPass}, {"new", "Added during implementation", evidence.CategoryNewTest}, {"modified", "Modified existing tests", evidence.CategoryModifiedExisting}, {"manual", "Manual claims", evidence.CategoryManual}} {
+		for _, category := range []struct{ id, title string }{
+			{"before", "Before implementation"},
+			{"reproduced", "Behaviour reproduced before change"},
+			{"added", "Added during implementation"},
+			{"attention", "Needs attention"},
+			{"manual", "Manual"},
+		} {
 			categoryItems := make([]screenItem, 0)
 			for _, item := range m.snap.Evidence.Items {
-				if item.Category == category.category {
+				if evidenceSection(item) == category.id {
 					categoryItems = append(categoryItems, screenItem{ID: "review.evidence." + item.ID, Label: item.Name, Detail: string(item.Category), Selectable: true, Preview: item})
 				}
 			}
-			if len(categoryItems) > 0 {
-				sections = append(sections, screenSection{ID: "review.evidence." + category.id, Title: category.title, Items: categoryItems})
-			}
+			sections = append(sections, screenSection{ID: "review.evidence." + category.id, Title: category.title, Items: categoryItems})
 		}
 	case tabDiff:
 		for _, file := range m.diffFiles() {
@@ -160,7 +162,7 @@ func (m *reviewModel) screen() canonicalScreen {
 			items = append(items, screenItem{ID: "review.attention." + attention.ID, Label: attention.Label, Selectable: true, Preview: attention})
 		}
 		items = append(items,
-			screenItem{ID: "review.complete", Label: "Complete Spec", Selectable: true, Action: screenAction(actionComplete)},
+			screenItem{ID: "review.complete", Label: "Complete Spec", Selectable: true, Action: screenAction(actionCompletion)},
 			screenItem{ID: "review.request_changes", Label: "Request Changes", Selectable: true, Action: screenAction(actionChanges)},
 		)
 	}
@@ -193,13 +195,29 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 	case "shift+tab":
 		m.selectTab(reviewTab(wrap(int(m.tab)-1, len(reviewTabLabels))))
 	case "up", "k":
-		m.move(-1)
+		if m.diffFocused {
+			m.scrollDiff(-1)
+		} else {
+			m.move(-1)
+		}
 	case "down", "j":
-		m.move(1)
+		if m.diffFocused {
+			m.scrollDiff(1)
+		} else {
+			m.move(1)
+		}
 	case "pgup":
-		m.viewport = max(0, m.viewport-max(1, m.height/2))
+		if m.diffFocused {
+			m.scrollDiff(-max(1, m.focusedCodeCapacity()-1))
+		} else {
+			m.viewport = max(0, m.viewport-max(1, m.height/2))
+		}
 	case "pgdown":
-		m.viewport += max(1, m.height/2)
+		if m.diffFocused {
+			m.scrollDiff(max(1, m.focusedCodeCapacity()-1))
+		} else {
+			m.viewport += max(1, m.height/2)
+		}
 	case "n":
 		m.moveHunk(1)
 	case "p":
@@ -228,6 +246,10 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 	case "?":
 		m.help = !m.help
 	case "b", "esc":
+		if m.diffFocused {
+			m.diffFocused, m.diffScroll, m.status = false, 0, ""
+			return nil
+		}
 		m.leave(actionBack)
 		return tea.Quit
 	case "ctrl+c":
@@ -241,6 +263,7 @@ func (m *reviewModel) leave(action string) { m.done, m.nav = true, action }
 
 func (m *reviewModel) selectTab(tab reviewTab) {
 	m.tab, m.hunk, m.status, m.viewport = tab, 0, "", 0
+	m.diffFocused, m.diffScroll = false, 0
 }
 
 func (m *reviewModel) move(delta int) {
@@ -249,7 +272,7 @@ func (m *reviewModel) move(delta int) {
 		return
 	}
 	m.cursors[m.tab] = wrap(m.cursors[m.tab]+delta, count)
-	m.hunk, m.status = 0, ""
+	m.hunk, m.diffScroll, m.status = 0, 0, ""
 }
 
 func (m *reviewModel) moveHunk(delta int) {
@@ -258,6 +281,17 @@ func (m *reviewModel) moveHunk(delta int) {
 		return
 	}
 	m.hunk = wrap(m.hunk+delta, count)
+	m.diffScroll = 0
+}
+
+func (m *reviewModel) scrollDiff(delta int) {
+	file, ok := m.selectedDiffFile()
+	if !ok {
+		return
+	}
+	capacity := m.focusedCodeCapacity()
+	maximum := max(0, len(m.hunkCodeLines(file, max(20, m.width-8)))-capacity)
+	m.diffScroll = clamp(m.diffScroll+delta, 0, maximum)
 }
 
 func (m *reviewModel) cycleFilter() {
@@ -353,7 +387,7 @@ func (m *reviewModel) refreshSnapshot() {
 		m.status = "Could not refresh: " + err.Error()
 		return
 	}
-	m.snap, m.hunk = snapshot, 0
+	m.snap, m.hunk, m.diffScroll, m.diffFocused = snapshot, 0, 0, false
 	m.status = "Refreshed actual state."
 	m.recordEvent(state.TimelineActualRefreshed, "actual state refreshed")
 }
@@ -372,10 +406,8 @@ func (m *reviewModel) activate() tea.Cmd {
 	}
 	switch {
 	case row.ID == "review.complete":
-		m.decision = decisionComplete
-		m.status = "Completion acknowledged; the Spec is being archived."
-		m.recordEvent(state.TimelineReviewDecision, "human acknowledged completion")
-		m.leave(actionComplete)
+		m.status = ""
+		m.leave(actionCompletion)
 		return tea.Quit
 	case row.ID == "review.request_changes":
 		m.decision = decisionChanges
@@ -385,8 +417,10 @@ func (m *reviewModel) activate() tea.Cmd {
 		return tea.Quit
 	case m.tab == tabChanges:
 		m.showDiff()
-	case m.tab == tabIntegration, m.tab == tabDiff:
+	case m.tab == tabIntegration:
 		m.openSelected()
+	case m.tab == tabDiff:
+		m.diffFocused, m.diffScroll, m.status = true, 0, ""
 	}
 	return nil
 }
@@ -458,6 +492,18 @@ func (m *reviewModel) diffFile() string {
 		return ""
 	}
 	return file.Path
+}
+
+func (m *reviewModel) selectedDiffFile() (review.FileReview, bool) {
+	if m.tab != tabDiff {
+		return review.FileReview{}, false
+	}
+	item, ok := m.screen().selectedItem()
+	if !ok {
+		return review.FileReview{}, false
+	}
+	file, ok := item.Preview.(review.FileReview)
+	return file, ok
 }
 
 func (m *reviewModel) selectedIntegration() (review.Integration, bool) {
@@ -538,7 +584,10 @@ func (m *reviewModel) View() tea.View {
 func (m *reviewModel) footer() string { return uiKeyHints(m.hints(), "  ") }
 
 func (m *reviewModel) hints() [][2]string {
-	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}, {"enter", "action"}}
+	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}}
+	if m.tab != tabDiff {
+		hints = append(hints, [2]string{"enter", "action"})
+	}
 	switch m.tab {
 	case tabChanges:
 		hints = append(hints, [2]string{"f", "filter"}, [2]string{"d", "diff"})
@@ -547,11 +596,25 @@ func (m *reviewModel) hints() [][2]string {
 	case tabEvidence:
 		hints = append(hints, [2]string{"t", "run tests"}, [2]string{"d", "test diff"}, [2]string{"s", "summary"})
 	case tabDiff:
-		hints = append(hints, [2]string{"n/p", "hunk"}, [2]string{"o", "VS Code"}, [2]string{"i", "integration"})
+		if m.diffFocused {
+			hints = [][2]string{{"↑/↓", "scroll code"}, {"n/p", "hunk"}, {"esc", "file list"}, {"o", "VS Code"}, {"i", "integration"}}
+			if m.width < reviewSplitWidth {
+				hints = [][2]string{{"↑/↓", "scroll code"}, {"n/p", "hunk"}, {"esc", "file list"}, {"o", "VS Code"}}
+			}
+		} else {
+			hints = append(hints, [2]string{"enter", "focus hunk"}, [2]string{"n/p", "hunk"}, [2]string{"o", "VS Code"}, [2]string{"i", "integration"})
+		}
 	case tabSummary:
 		hints = append(hints, [2]string{"d", "diff"}, [2]string{"i", "integration"}, [2]string{"e", "evidence"})
 	}
-	return append(hints, [2]string{"r", "refresh"}, [2]string{"?", "help"}, [2]string{"b", "back"}, [2]string{"g", "home"})
+	if !m.diffFocused || m.width >= reviewSplitWidth {
+		hints = append(hints, [2]string{"r", "refresh"})
+	}
+	hints = append(hints, [2]string{"?", "help"})
+	if !m.diffFocused {
+		hints = append(hints, [2]string{"b", "back"}, [2]string{"g", "home"})
+	}
+	return hints
 }
 
 func (m *reviewModel) tabBody(width int) []string {
@@ -563,6 +626,9 @@ func (m *reviewModel) tabBody(width int) []string {
 	case tabEvidence:
 		return m.evidenceBody()
 	case tabDiff:
+		if m.diffFocused {
+			return m.focusedDiffBody(width)
+		}
 		return m.diffBody(width)
 	case tabSummary:
 		return m.summaryBody(width)
@@ -798,6 +864,9 @@ func (m *reviewModel) evidenceBody() []string {
 	var lines []string
 	for _, section := range m.screen().Sections {
 		lines = append(lines, uiTitleStyle.Render(section.Title))
+		if len(section.Items) == 0 {
+			lines = append(lines, uiMutedStyle.Render("  No evidence in this category."))
+		}
 		for _, screenItem := range section.Items {
 			item := screenItem.Preview.(evidence.Item)
 			row := fmt.Sprintf("%s %s", evidenceMark(item), item.Name)
@@ -814,6 +883,15 @@ func (m *reviewModel) evidenceBody() []string {
 
 func evidenceDetails(item evidence.Item) []string {
 	var lines []string
+	if item.Status == "parser_error" {
+		lines = append(lines, uiMutedStyle.Render("    command-level fallback · structured test provenance unavailable"))
+	}
+	if item.Category == evidence.CategoryNewTest {
+		lines = append(lines, uiMutedStyle.Render("    new test · supporting coverage; not independent proof"))
+	}
+	if item.Category == evidence.CategoryModifiedExisting {
+		lines = append(lines, uiMutedStyle.Render("    modified during implementation; not independent proof"))
+	}
 	if item.Category == evidence.CategoryFailThenPass {
 		baseline, modified := "", "NO"
 		digests := map[string]bool{}
@@ -833,6 +911,13 @@ func evidenceDetails(item evidence.Item) []string {
 			uiEvidenceStyle.Render("    ✓ now passes"),
 			uiMutedStyle.Render("    test modified after baseline: "+modified))
 	}
+	if item.Category == evidence.CategoryExisting && item.Status != "parser_error" {
+		baseline := "unknown"
+		if len(item.Observations) > 0 && item.Observations[0].BaselineSHA != "" {
+			baseline = shortSHA(item.Observations[0].BaselineSHA)
+		}
+		lines = append(lines, uiMutedStyle.Render("    baseline "+baseline+" · "+strings.ToUpper(emptyAs(item.Status, "unknown"))))
+	}
 	if item.Category == evidence.CategoryManual {
 		lines = append(lines, uiMutedStyle.Render("    manual claim · "+emptyAs(item.Command, "no command recorded")))
 	}
@@ -843,6 +928,23 @@ func evidenceDetails(item evidence.Item) []string {
 		lines = append(lines, uiMutedStyle.Render("    "+item.Reason))
 	}
 	return lines
+}
+
+func evidenceSection(item evidence.Item) string {
+	if item.Category == evidence.CategoryManual {
+		return "manual"
+	}
+	if !item.Fresh || item.Status == "parser_error" || item.Category == evidence.CategoryModifiedExisting {
+		return "attention"
+	}
+	switch item.Category {
+	case evidence.CategoryFailThenPass:
+		return "reproduced"
+	case evidence.CategoryNewTest:
+		return "added"
+	default:
+		return "before"
+	}
 }
 
 func (m *reviewModel) evidenceCounts() string {
@@ -878,6 +980,33 @@ func (m *reviewModel) diffBody(width int) []string {
 		uiPanel(contentWidth, lipgloss.Height(rightBody)+2, uiYellow, "Focused hunk", "", rightBody),
 	)
 	return strings.Split(body, "\n")
+}
+
+func (m *reviewModel) focusedDiffBody(width int) []string {
+	file, ok := m.selectedDiffFile()
+	if !ok {
+		return []string{uiEmptyState("", "No diff is available. Press Escape to return to files.")}
+	}
+	contentWidth := max(20, width-4)
+	panelHeight := max(8, uiWorkflowBodyHeight(m.height, "Review · Diff")-1)
+	innerWidth := max(10, contentWidth-4)
+	code := m.hunkCodeLines(file, innerWidth)
+	capacity := m.focusedCodeCapacity()
+	maximum := max(0, len(code)-capacity)
+	m.diffScroll = clamp(m.diffScroll, 0, maximum)
+	end := min(len(code), m.diffScroll+capacity)
+	visible := code[m.diffScroll:end]
+	lines := []string{ansi.Truncate(file.Path, innerWidth, "…")}
+	lines = append(lines, m.hunkHeading(file))
+	lines = append(lines, visible...)
+	lines = append(lines, uiMutedStyle.Render(fmt.Sprintf("Lines %d–%d of %d", min(len(code), m.diffScroll+1), end, len(code))))
+	lines = append(lines, strings.Join(m.diffAnnotations(file), "   "))
+	return strings.Split(uiPanel(contentWidth, panelHeight, uiPurple, "Focused hunk", "FOCUSED", strings.Join(lines, "\n")), "\n")
+}
+
+func (m *reviewModel) focusedCodeCapacity() int {
+	panelHeight := max(8, uiWorkflowBodyHeight(m.height, "Review · Diff")-1)
+	return max(1, panelHeight-6)
 }
 
 func (m *reviewModel) diffFileList(items []screenItem, current, width int, compact bool) string {
@@ -917,8 +1046,26 @@ func (m *reviewModel) hunkLines(file review.FileReview, width int) []string {
 	if len(hunks) == 0 {
 		return []string{uiMutedStyle.Render("No hunks were recorded for this file.")}
 	}
+	lines := []string{m.hunkHeading(file)}
+	return append(lines, m.hunkCodeLines(file, width)...)
+}
+
+func (m *reviewModel) hunkHeading(file review.FileReview) string {
+	hunks := m.snap.Hunks[file.Path]
+	if len(hunks) == 0 {
+		return ""
+	}
 	hunk := hunks[clamp(m.hunk, 0, len(hunks)-1)]
-	lines := []string{uiMutedStyle.Render(fmt.Sprintf("%s  hunk %d/%d", hunk.Hunk.Header, clamp(m.hunk, 0, len(hunks)-1)+1, len(hunks)))}
+	return uiMutedStyle.Render(fmt.Sprintf("%s  hunk %d/%d", hunk.Hunk.Header, clamp(m.hunk, 0, len(hunks)-1)+1, len(hunks)))
+}
+
+func (m *reviewModel) hunkCodeLines(file review.FileReview, width int) []string {
+	hunks := m.snap.Hunks[file.Path]
+	if len(hunks) == 0 || (file.Change != nil && file.Change.Binary) {
+		return nil
+	}
+	hunk := hunks[clamp(m.hunk, 0, len(hunks)-1)]
+	lines := make([]string, 0, len(hunk.Hunk.Lines))
 	for _, line := range hunk.Hunk.Lines {
 		marker, style := " ", uiMutedStyle
 		number := line.NewLine

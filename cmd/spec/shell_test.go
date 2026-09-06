@@ -25,6 +25,7 @@ func TestShellRoutesEveryForwardActionAndReturnsWithBack(t *testing.T) {
 		actionEvidence:   screenReview,
 		actionHistory:    screenHistory,
 		actionComplete:   screenHistory,
+		actionCompletion: screenComplete,
 		actionChanges:    screenBack,
 		actionBack:       screenBack,
 		actionQuit:       screenExit,
@@ -50,6 +51,7 @@ func TestShellScreensShareExitBackAndHelpKeys(t *testing.T) {
 			"overview":   newOverviewModel(overviewData{Title: "Intent", SpecID: "SPEC-001", Now: time.Now()}),
 			"plan":       newPlanModel(t.TempDir(), reviewPlanFixture()),
 			"review":     newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture())),
+			"complete":   newCompletionModel(reviewSnapshotFixture(reviewPlanFixture())),
 			"history":    newHistoryModel(t.TempDir(), historyFixture(), false),
 		}
 	}
@@ -245,7 +247,7 @@ func TestReviewDecisionsAreExplicitAndSurviveUnresolvedFacts(t *testing.T) {
 	}
 	setReviewCursorByID(t, model, "review.complete")
 	model.Update(key(tea.KeyEnter, ""))
-	if model.decision != decisionComplete || model.nav != actionComplete {
+	if model.decision != decisionNone || model.nav != actionCompletion {
 		t.Fatalf("complete = %q/%q", model.decision, model.nav)
 	}
 

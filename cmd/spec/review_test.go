@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -606,7 +607,7 @@ func TestReviewEvidenceTabExposesProvenanceAndActions(t *testing.T) {
 	}
 	plain := reviewPlain(model)
 	for _, expected := range []string{
-		"Pre-change reproduction", "TestAutoIndexCanBeDisabled", "failed against baseline a1b2c3d",
+		"Behaviour reproduced", "TestAutoIndexCanBeDisabled", "failed against baseline a1b2c3d",
 		"test modified after baseline: NO", "Added during implementation", "TestConfigAutoIndexFalse",
 		"manual", "checked the CLI by hand", "stale", "Fail → pass", "1",
 	} {
@@ -621,6 +622,33 @@ func TestReviewEvidenceTabExposesProvenanceAndActions(t *testing.T) {
 	model.Update(key('d', "d"))
 	if model.tab != tabDiff {
 		t.Fatalf("d did not hand off to the test diff: tab=%d", model.tab)
+	}
+}
+
+func TestReviewEvidenceUsesSignOffHierarchyWithoutInflatingProof(t *testing.T) {
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	model.tab = tabEvidence
+	model.snap.Evidence.Items = append(model.snap.Evidence.Items, evidence.Item{
+		ID: "command:broken", Name: "go test ./...", Command: "go test ./...",
+		Category: evidence.CategoryExisting, Status: "parser_error", Fresh: false,
+		Reason: "structured output could not be parsed",
+	}, evidence.Item{
+		ID: "modified", Name: "TestModifiedDuringChange", Category: evidence.CategoryModifiedExisting,
+		Status: "passed", Passing: true, Fresh: true,
+	})
+	plain := reviewPlain(model)
+	for _, expected := range []string{
+		"Before implementation", "Behaviour reproduced", "Added during implementation",
+		"Needs attention", "Manual", "supporting coverage; not independent proof",
+		"modified during implementation; not independent proof", "stale",
+		"command-level fallback", "structured output could not be parsed",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("evidence sign-off hierarchy missing %q:\n%s", expected, plain)
+		}
+	}
+	if strings.Contains(strings.ToLower(plain), "evidence score") {
+		t.Fatalf("evidence invented a synthetic score:\n%s", plain)
 	}
 }
 
@@ -721,6 +749,42 @@ func TestReviewDiffUsesFileNavigatorAndFocusedHunkAtWideAndNarrowWidths(t *testi
 	}
 }
 
+func TestReviewDiffFocusScrollsCodeAndEscapeReturnsToFiles(t *testing.T) {
+	model := newReviewFixtureModel(t, reviewPlanFixture())
+	model.tab = tabDiff
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	for model.diffFile() != "indexer/indexer.go" {
+		model.Update(key(tea.KeyDown, ""))
+	}
+	lines := make([]gitutil.DiffLine, 30)
+	for index := range lines {
+		lines[index] = gitutil.DiffLine{Kind: gitutil.DiffAddition, Text: fmt.Sprintf("scroll marker %02d", index), NewLine: 80 + index}
+	}
+	hunk := model.snap.Hunks["indexer/indexer.go"][0]
+	hunk.Hunk.Lines = lines
+	model.snap.Hunks["indexer/indexer.go"][0] = hunk
+
+	model.Update(key(tea.KeyEnter, ""))
+	if !model.diffFocused || model.diffScroll != 0 {
+		t.Fatalf("enter did not focus the hunk: focused=%v scroll=%d", model.diffFocused, model.diffScroll)
+	}
+	before := reviewPlain(model)
+	if !strings.Contains(before, "FOCUSED") || !strings.Contains(before, "scroll marker 00") || strings.Contains(before, "scroll marker 29") {
+		t.Fatalf("initial focused viewport is not bounded:\n%s", before)
+	}
+	for range 18 {
+		model.Update(key(tea.KeyDown, ""))
+	}
+	after := reviewPlain(model)
+	if model.diffFile() != "indexer/indexer.go" || model.diffScroll == 0 || strings.Contains(after, "scroll marker 00") || !strings.Contains(after, "scroll marker 18") {
+		t.Fatalf("focused hunk did not scroll independently: file=%q scroll=%d\n%s", model.diffFile(), model.diffScroll, after)
+	}
+	model.Update(key(tea.KeyEscape, ""))
+	if model.diffFocused || model.done || model.tab != tabDiff {
+		t.Fatalf("escape did not return to file navigation: focused=%v done=%v tab=%d", model.diffFocused, model.done, model.tab)
+	}
+}
+
 func TestReviewSummaryShowsTotalsAttentionAndExplicitDecisions(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
 	model.tab = tabSummary
@@ -756,8 +820,8 @@ func TestReviewSummaryShowsTotalsAttentionAndExplicitDecisions(t *testing.T) {
 	model.done, model.nav = false, actionNone
 	setReviewCursorByID(t, model, "review.complete")
 	model.Update(key(tea.KeyEnter, ""))
-	if model.decision != decisionComplete || len(recorded) != 2 || recorded[1].Type != state.TimelineReviewDecision {
-		t.Fatalf("complete = %q recorded=%+v", model.decision, recorded)
+	if model.decision != decisionChanges || model.nav != actionCompletion || len(recorded) != 1 {
+		t.Fatalf("completion handoff = %q/%q recorded=%+v", model.decision, model.nav, recorded)
 	}
 }
 
