@@ -332,7 +332,7 @@ func (model *planCaptureModel) View() tea.View {
 	case planCapturePaste:
 		title = "Implementation Plan · Manual Paste"
 		body = strings.Join([]string{uiTitleStyle.Render("Paste AI response"), "", uiMutedStyle.Render("Paste one response containing exactly one fenced spec-plan block."), "", model.editor.view(), "", uiMutedStyle.Render(model.status)}, "\n")
-		footer = uiKeyHints([][2]string{{"Ctrl+Enter", "preview"}, {"b", "back"}, {"g", "home"}}, "  ")
+		footer = uiKeyHints([][2]string{{"Ctrl+Enter", "preview"}, {"b/esc", "back"}}, "  ")
 	case planCaptureCLIWait:
 		title = "Implementation Plan · CLI"
 		body = strings.Join([]string{uiTitleStyle.Render("Waiting for an implementation plan..."), "", "Ask your AI tool to run:", "", "  spec plan submit --stdin", "", "Spec can remain open. Press r to reload durable workspace state.", "", uiMutedStyle.Render(model.status), "", uiSelectedRow("> Continue without a plan", 0)}, "\n")

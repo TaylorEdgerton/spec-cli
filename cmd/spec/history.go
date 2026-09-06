@@ -10,31 +10,37 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
 
 type historyModel struct {
-	dir           string
-	all           []state.History
-	cursor        int
-	search        lineEditor
-	searching     bool
-	stats         bool
-	timeline      bool
-	spec          string
-	status        string
-	width, height int
-	done          bool
-	stopped       bool
-	help          bool
-	nav           string
-	viewport      int
+	root            string
+	dir             string
+	all             []state.History
+	active          bool
+	cursor          int
+	search          lineEditor
+	searching       bool
+	timeline        bool
+	spec            string
+	status          string
+	width, height   int
+	done            bool
+	stopped         bool
+	help            bool
+	nav             string
+	viewport        int
+	followupConfirm bool
+	followupCursor  int
 
 	readArchive func(string) (string, error)
+	reopen      func(string, state.History, time.Time) (state.Setup, error)
 }
 
-func newHistoryModel(dir string, records []state.History, stats bool) *historyModel {
-	return &historyModel{dir: dir, all: records, stats: stats, readArchive: readSpecArchive}
+func newHistoryModel(root, dir string, records []state.History, active bool) *historyModel {
+	return &historyModel{root: root, dir: dir, all: records, active: active, readArchive: readSpecArchive, reopen: change.BeginFollowUp}
 }
 
 func (m *historyModel) screen() canonicalScreen {
@@ -87,6 +93,9 @@ func (m *historyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *historyModel) key(msg tea.KeyPressMsg) tea.Cmd {
+	if m.followupConfirm {
+		return m.updateFollowUpConfirmation(msg.Keystroke())
+	}
 	if m.searching {
 		switch msg.Keystroke() {
 		case "enter":
@@ -118,10 +127,10 @@ func (m *historyModel) key(msg tea.KeyPressMsg) tea.Cmd {
 		m.viewport += max(1, m.height/2)
 	case "/":
 		m.searching, m.status = true, ""
-	case "s":
-		m.stats = !m.stats
 	case "t":
 		m.timeline = !m.timeline
+	case "f":
+		m.startFollowUp()
 	case "?":
 		m.help = !m.help
 	case "enter":
@@ -146,16 +155,77 @@ func (m *historyModel) leave(action string) {
 }
 
 func (m *historyModel) hints() [][2]string {
+	if m.followupConfirm {
+		return [][2]string{{"←/→", "choose"}, {"enter", "confirm"}, {"esc", "cancel"}}
+	}
 	if m.spec != "" {
 		return [][2]string{{"esc", "close Spec"}, {"?", "help"}, {"g", "home"}}
 	}
 	if m.searching {
 		return [][2]string{{"type", "search"}, {"enter", "keep"}, {"esc", "clear"}}
 	}
+	if m.width <= reviewMinWidth {
+		return [][2]string{
+			{"↑/↓", "select"}, {"enter", "open"}, {"/", "search"}, {"t", "timeline"},
+			{"f", "follow-up"}, {"b", "back"}, {"g", "home"},
+		}
+	}
 	return [][2]string{
 		{"↑/↓", "select"}, {"enter", "open Spec"}, {"/", "search"},
-		{"s", "stats"}, {"t", "timeline"}, {"?", "help"}, {"b", "back"}, {"g", "home"},
+		{"t", "timeline"}, {"f", "follow-up"}, {"?", "help"}, {"b", "back"}, {"g", "home"},
 	}
+}
+
+func (m *historyModel) startFollowUp() {
+	record, ok := m.selected()
+	if !ok {
+		return
+	}
+	if reason := m.followUpUnavailable(record); reason != "" {
+		m.status = reason
+		return
+	}
+	m.followupConfirm, m.followupCursor, m.status = true, 0, ""
+}
+
+func (m *historyModel) followUpUnavailable(record state.History) string {
+	if m.active {
+		return "A follow-up is unavailable while another active Spec exists."
+	}
+	if strings.TrimSpace(record.SpecID) == "" {
+		return "A follow-up is unavailable because this legacy record has no Spec ID."
+	}
+	if strings.TrimSpace(record.SpecArchive) == "" {
+		return "A follow-up is unavailable because this record has no archived Spec."
+	}
+	return ""
+}
+
+func (m *historyModel) updateFollowUpConfirmation(keystroke string) tea.Cmd {
+	switch keystroke {
+	case "left", "right", "up", "down", "j", "k", "tab", "shift+tab":
+		m.followupCursor = wrap(m.followupCursor+1, 2)
+	case "esc", "b":
+		m.followupConfirm, m.followupCursor = false, 0
+	case "enter":
+		if m.followupCursor == 0 {
+			m.followupConfirm = false
+			return nil
+		}
+		record, ok := m.selected()
+		if !ok {
+			m.followupConfirm = false
+			return nil
+		}
+		if _, err := m.reopen(m.root, record, time.Now()); err != nil {
+			m.followupConfirm = false
+			m.status = "Could not start follow-up: " + err.Error()
+			return nil
+		}
+		m.active, m.done, m.nav = true, true, actionDefinition
+		return tea.Quit
+	}
+	return nil
 }
 
 func (m *historyModel) move(delta int) {
@@ -225,6 +295,9 @@ func (m *historyModel) body(width int) []string {
 	if m.help {
 		return []string{uiHelpOverlayWidth(m.hints(), width)}
 	}
+	if m.followupConfirm {
+		return m.followUpConfirmationBody(width)
+	}
 	if m.spec != "" {
 		return []string{uiTitleStyle.Render("Archived Spec (read-only)"), "", uiProse(m.spec, width)}
 	}
@@ -233,7 +306,7 @@ func (m *historyModel) body(width int) []string {
 		if !ok {
 			return []string{uiEmptyState("Timeline", "No completed Spec is selected.")}
 		}
-		return append([]string{uiTitleStyle.Render("Timeline"), ""}, timelineLines(timelineEntries(record))...)
+		return append([]string{uiTitleStyle.Render("Timeline"), ""}, timelineLines(m.timelineWithFollowUps(record))...)
 	}
 	var lines []string
 	if m.searching || m.search.value != "" {
@@ -272,20 +345,85 @@ func (m *historyModel) body(width int) []string {
 	}
 	lines = append(lines, fmt.Sprintf("  Baseline %s  ·  archive %s",
 		emptyDash(shortSHA(record.BaseSHA)), emptyDash(record.SpecArchive)))
-	if m.stats {
-		lines = append(lines, historyStatsLines(record)...)
+	if reason := m.followUpUnavailable(record); reason != "" {
+		lines = append(lines, uiMutedStyle.Render("  "+reason))
+	} else {
+		lines = append(lines, "  [ Reopen as follow-up ]  press f")
+	}
+	lines = append(lines, historyStatsLines(record)...)
+	var followups []string
+	if record.SpecID != "" {
+		for _, candidate := range m.all {
+			if candidate.OriginSpecID != record.SpecID {
+				continue
+			}
+			followups = append(followups, emptyDash(candidate.SpecID)+" · "+candidate.Title)
+		}
+	}
+	if len(followups) > 0 {
+		lines = append(lines, uiTitleStyle.Render("Follow-ups"))
+		for _, followup := range followups {
+			lines = append(lines, "  "+followup)
+		}
 	}
 	return lines
 }
 
+func (m *historyModel) followUpConfirmationBody(width int) []string {
+	record, _ := m.selected()
+	cancel, create := "  [ Cancel ]", "  [ Create linked Spec ]"
+	if m.followupCursor == 0 {
+		cancel = uiSelectedRow("> [ Cancel ]", 0)
+	} else {
+		create = uiSelectedRow("> [ Create linked Spec ]", 0)
+	}
+	copyWidth := max(20, width-4)
+	body := strings.Join([]string{
+		uiTitleStyle.Render("Reopen as follow-up?"), "",
+		uiIndentedProse(record.Title, copyWidth, 2), "",
+		uiProse("A new Spec ID and current Git baseline will be used.", copyWidth),
+		uiProse("Intent, scope, and acceptance criteria will be copied; the archived plan and evidence remain historical.", copyWidth),
+		"", cancel + "    " + create,
+	}, "\n")
+	return strings.Split(uiPanel(max(20, width), lipgloss.Height(body)+2, uiPurple, "Follow-up", "", body), "\n")
+}
+
+func (m *historyModel) timelineWithFollowUps(record state.History) []timelineEntry {
+	entries := timelineEntries(record)
+	if record.SpecID == "" {
+		return entries
+	}
+	for _, candidate := range m.all {
+		if candidate.OriginSpecID != record.SpecID {
+			continue
+		}
+		entries = append(entries, timelineEntry{
+			At: candidate.StartedAt, Type: string(state.TimelineFollowUpStarted), Actor: "human", Source: "history",
+			Detail: "continued as " + emptyDash(candidate.SpecID), Derived: true,
+		})
+	}
+	sort.SliceStable(entries, func(left, right int) bool { return entries[left].At.Before(entries[right].At) })
+	return entries
+}
+
 func historyStatsLines(record state.History) []string {
 	evidence := record.EvidenceSummary
+	plan := "no"
+	if record.Plan != nil {
+		plan = "yes"
+	}
+	completed := "not recorded"
+	if !record.FinishedAt.IsZero() {
+		completed = record.FinishedAt.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	tests := evidence.Existing + evidence.FailThenPass + evidence.NewTests + evidence.ModifiedExisting
+	evidenceTotal := tests + evidence.Manual
 	return []string{
 		fmt.Sprintf("  Files %d  ·  +%d -%d  ·  duration %s", record.Stats.Files,
 			record.Stats.Additions, record.Stats.Deletions, historyDuration(record)),
-		fmt.Sprintf("  Plan drift: matched %d  additional %d  untouched %d",
-			record.PlanDrift.Matched, record.PlanDrift.Additional, record.PlanDrift.Untouched),
-		fmt.Sprintf("  Evidence: existing %d  fail_then_pass %d  new_tests %d  modified_existing %d  manual %d",
+		fmt.Sprintf("  Completed %s  ·  Agent plan %s", completed, plan),
+		fmt.Sprintf("  Tests %d  ·  Evidence %d item(s)  ·  Additional %d", tests, evidenceTotal, record.PlanDrift.Additional),
+		fmt.Sprintf("  Evidence: existing %d · reproduced %d · new %d · modified %d · manual %d",
 			evidence.Existing, evidence.FailThenPass, evidence.NewTests, evidence.ModifiedExisting, evidence.Manual),
 	}
 }
@@ -314,21 +452,21 @@ func readSpecArchive(path string) (string, error) {
 	return string(data), err
 }
 
-func loadHistory(root string) (string, []state.History, error) {
+func loadHistory(root string) (string, []state.History, bool, error) {
 	workspace, err := state.Load(root)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
 	records, err := workspace.HistoryRecords()
-	return workspace.Dir, records, err
+	return workspace.Dir, records, workspace.Active, err
 }
 
-func runHistory(root string, stats bool, input io.Reader, output io.Writer) (string, error) {
-	dir, records, err := loadHistory(root)
+func runHistory(root string, input io.Reader, output io.Writer) (string, error) {
+	dir, records, active, err := loadHistory(root)
 	if err != nil {
 		return actionQuit, err
 	}
-	final, err := tea.NewProgram(newHistoryModel(dir, records, stats), tea.WithInput(input), tea.WithOutput(output)).Run()
+	final, err := tea.NewProgram(newHistoryModel(root, dir, records, active), tea.WithInput(input), tea.WithOutput(output)).Run()
 	if err != nil {
 		return actionQuit, err
 	}

@@ -80,7 +80,7 @@ func runRecentChanges(root string, input io.Reader, output io.Writer) (bool, err
 		}
 		// Both entries open the same completed-Spec history; "Code changes" simply
 		// starts with its stored file and line statistics already showing.
-		action, err := runHistory(root, choice == 1, input, output)
+		action, err := runHistory(root, input, output)
 		if err != nil || action == actionQuit {
 			return action == actionQuit, err
 		}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -26,6 +27,7 @@ func historyFixture() []state.History {
 			PlanDrift:       state.PlanDriftSummary{Matched: 2, Additional: 1},
 			EvidenceSummary: state.EvidenceSummary{Existing: 2, NewTests: 1},
 			DurationSeconds: 3600, CompletionAcknowledged: true,
+			Plan: reviewPlanFixture(),
 		},
 		{
 			SpecID: "SPEC-002", Title: "Disable automatic indexing", Intent: "Disable automatic indexing",
@@ -39,7 +41,7 @@ func historyFixture() []state.History {
 	}
 }
 
-func newHistoryFixtureModel(t *testing.T, records []state.History, stats bool) *historyModel {
+func newHistoryFixtureModel(t *testing.T, records []state.History, _ bool) *historyModel {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "specs"), 0o700); err != nil {
@@ -48,7 +50,7 @@ func newHistoryFixtureModel(t *testing.T, records []state.History, stats bool) *
 	if err := os.WriteFile(filepath.Join(dir, "specs", "one.md"), []byte("# Add config loader\n\n## Intent\nLoad config from disk.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	model := newHistoryModel(dir, records, stats)
+	model := newHistoryModel(t.TempDir(), dir, records, false)
 	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
 	return model
 }
@@ -120,28 +122,54 @@ func TestHistorySearchFiltersVisibleRecordsWithoutChangingThem(t *testing.T) {
 	}
 }
 
-func TestHistoryStatsToggleAndSelectedSummaryShowStoredFacts(t *testing.T) {
+func TestHistorySelectedSummaryAlwaysShowsStoredReviewFacts(t *testing.T) {
 	model := newHistoryFixtureModel(t, historyFixture(), false)
 	updateModel(model, key(tea.KeyDown, ""))
+	for _, size := range [][2]int{{120, 34}, {80, 24}} {
+		model.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		plain := historyPlain(model)
+		for _, fragment := range []string{
+			"Add config loader", "config package only", "abcdef1", "Completed 2026-08-20",
+			"Files 3", "+40 -5", "duration 1h0m", "Agent plan yes", "Tests 3",
+			"Additional 1", "Evidence", "new 1",
+		} {
+			if !strings.Contains(plain, fragment) {
+				t.Fatalf("selected summary at %dx%d missing %q:\n%s", size[0], size[1], fragment, plain)
+			}
+		}
+	}
 	plain := historyPlain(model)
-	for _, fragment := range []string{"Add config loader", "config package only", "abcdef1"} {
-		if !strings.Contains(plain, fragment) {
-			t.Fatalf("selected summary missing %q:\n%s", fragment, plain)
-		}
-	}
-	if strings.Contains(plain, "+40 -5") {
-		t.Fatalf("stats are shown before the toggle:\n%s", plain)
-	}
 	updateModel(model, key('s', "s"))
-	plain = historyPlain(model)
-	for _, fragment := range []string{"+40 -5", "3", "matched 2", "1h0m", "new_tests 1"} {
-		if !strings.Contains(plain, fragment) {
-			t.Fatalf("stats view missing %q:\n%s", fragment, plain)
-		}
+	if historyPlain(model) != plain {
+		t.Fatal("obsolete stats shortcut changed the canonical History summary")
 	}
-	updateModel(model, key('s', "s"))
-	if strings.Contains(historyPlain(model), "+40 -5") {
-		t.Fatal("stats toggle did not turn off")
+}
+
+func TestHistoryShowsFollowUpLinksWithoutMutatingSourceRecord(t *testing.T) {
+	records := historyFixture()
+	records = append(records, state.History{
+		SpecID: "SPEC-003", OriginSpecID: "SPEC-001", Title: "Config loader follow-up",
+		FinishedAt: time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), CompletionAcknowledged: true,
+	})
+	source := records[0]
+	model := newHistoryFixtureModel(t, records, false)
+	for selected, _ := model.selected(); selected.SpecID != "SPEC-001"; selected, _ = model.selected() {
+		updateModel(model, key(tea.KeyDown, ""))
+	}
+	plain := historyPlain(model)
+	if !strings.Contains(plain, "Follow-ups") || !strings.Contains(plain, "SPEC-003") {
+		t.Fatalf("source does not expose its linked follow-up:\n%s", plain)
+	}
+	if !reflect.DeepEqual(records[0], source) {
+		t.Fatal("rendering follow-up links mutated the archived source")
+	}
+}
+
+func TestLegacyHistoryWithoutIDsDoesNotLinkUnrelatedRecordsAsFollowUps(t *testing.T) {
+	records := []state.History{{Title: "Legacy one"}, {Title: "Legacy two"}}
+	model := newHistoryFixtureModel(t, records, false)
+	if plain := historyPlain(model); strings.Contains(plain, "Follow-ups") {
+		t.Fatalf("ID-less legacy records were linked together:\n%s", plain)
 	}
 }
 
@@ -244,6 +272,29 @@ func TestHistoryRendersInsideSupportedWindowsAndExplainsSmallerOnes(t *testing.T
 	}
 }
 
+func TestHistoryFollowUpConfirmationIsSafeAndBoundedAtSupportedWidths(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 34}} {
+		model := newHistoryFixtureModel(t, historyFixture(), false)
+		model.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		updateModel(model, key('f', "f"))
+		content := model.View().Content
+		plain := ansi.Strip(content)
+		words := strings.Join(strings.Fields(plain), " ")
+		for _, expected := range []string{"Reopen as follow-up?", "new Spec ID", "current Git baseline", "archived", "plan and evidence", "Cancel", "Create linked Spec"} {
+			if !strings.Contains(words, expected) {
+				t.Fatalf("follow-up confirmation at %dx%d missing %q:\n%s", size[0], size[1], expected, plain)
+			}
+		}
+		if lipgloss.Width(content) > size[0] || lipgloss.Height(content) > size[1] {
+			t.Fatalf("follow-up confirmation bounds = %dx%d at %dx%d", lipgloss.Width(content), lipgloss.Height(content), size[0], size[1])
+		}
+		updateModel(model, key(tea.KeyEnter, ""))
+		if model.followupConfirm || model.nav != actionNone {
+			t.Fatalf("default confirmation did not safely cancel: %+v", model)
+		}
+	}
+}
+
 func TestLoadHistoryReadsCompletedRecordsFromTheWorkspace(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
@@ -264,17 +315,20 @@ func TestLoadHistoryReadsCompletedRecordsFromTheWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir, records, err := loadHistory(root)
+	dir, records, active, err := loadHistory(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if dir != workspace.Dir {
 		t.Fatalf("archive directory = %q, want %q", dir, workspace.Dir)
 	}
+	if active {
+		t.Fatal("history load reported an inactive fixture as active")
+	}
 	if got := historyTitles(records); !reflect.DeepEqual(got, []string{"Add config loader", "Disable automatic indexing"}) {
 		t.Fatalf("loaded records = %v", got)
 	}
-	model := newHistoryModel(dir, records, true)
+	model := newHistoryModel(root, dir, records, active)
 	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
 	plain := historyPlain(model)
 	for _, fragment := range []string{"Disable automatic indexing", "+12 -30"} {
