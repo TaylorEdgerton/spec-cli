@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/TaylorEdgerton/spec-cli/internal/brand"
@@ -61,10 +62,18 @@ func run(args []string) error {
 }
 
 func usage() {
-	fmt.Printf("%s %s - structured AI-assisted engineering\n\n", brand.Command, version)
-	fmt.Printf("usage: %s [command] [args]\n", brand.Command)
-	fmt.Printf("run %s without a command to open or resume the interactive workflow\n\ncommands:\n", brand.Command)
+	usageTo(os.Stdout)
+}
+
+func usageTo(output io.Writer) {
+	fmt.Fprintf(output, "%s %s - structured AI-assisted engineering\n\n", brand.Command, version)
+	fmt.Fprintf(output, "usage: %s [command] [args]\n", brand.Command)
+	fmt.Fprintf(output, "run %s without a command to open or resume the interactive workflow\n\ncommands:\n", brand.Command)
 	for _, item := range commands {
-		fmt.Printf("  %-10s %s\n", item.name, item.summary)
+		fmt.Fprintf(output, "  %-10s %s\n", item.name, item.summary)
 	}
+	fmt.Fprintln(output, "\nplanning:")
+	fmt.Fprintf(output, "  %-30s %s\n", "spec prompt --plan [--copy]", "create the optional planning prompt")
+	fmt.Fprintf(output, "  %-30s %s\n", "spec plan submit --stdin", "validate and store plan JSON from stdin")
+	fmt.Fprintf(output, "  %-30s %s\n", "spec prompt [--copy]", "create the implementation prompt")
 }
