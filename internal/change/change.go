@@ -113,6 +113,48 @@ func BeginSetup(root, title string, now time.Time) (state.Setup, error) {
 	return setup, nil
 }
 
+// BeginFollowUp starts a new change from the human-authored parts of a
+// completed Spec. The completed record, its plan, and its evidence remain
+// immutable history; the follow-up receives a new ID and current Git baseline.
+func BeginFollowUp(root string, record state.History, now time.Time) (state.Setup, error) {
+	workspace, err := state.Load(root)
+	if err != nil {
+		return state.Setup{}, err
+	}
+	if workspace.Active {
+		return state.Setup{}, fmt.Errorf("another active Spec must be completed before starting a follow-up")
+	}
+	sourceID := strings.TrimSpace(record.SpecID)
+	if sourceID == "" {
+		return state.Setup{}, fmt.Errorf("the completed Spec has no ID to link from")
+	}
+	archive := filepath.Clean(filepath.FromSlash(record.SpecArchive))
+	if record.SpecArchive == "" || filepath.IsAbs(archive) || archive == ".." || strings.HasPrefix(archive, ".."+string(filepath.Separator)) {
+		return state.Setup{}, fmt.Errorf("the completed Spec has no readable archive to copy acceptance criteria from")
+	}
+	markdown, err := os.ReadFile(filepath.Join(workspace.Dir, archive))
+	if err != nil {
+		return state.Setup{}, fmt.Errorf("read completed Spec archive: %w", err)
+	}
+	setup := state.Setup{
+		Stage: "change", Title: strings.TrimSpace(record.Intent), Outcome: strings.TrimSpace(record.Scope), OriginSpecID: sourceID,
+	}
+	if setup.Title == "" {
+		setup.Title = strings.TrimSpace(record.Title)
+	}
+	for _, criterion := range AcceptanceCriteria(string(markdown)) {
+		setup.Criteria = append(setup.Criteria, state.SetupCriterion{Text: criterion.Text, Included: true})
+	}
+	base, err := gitutil.Head(root)
+	if err != nil {
+		return state.Setup{}, fmt.Errorf("a baseline commit is required before starting a follow-up")
+	}
+	if err := workspace.BeginSetup(base, now.UTC(), setup, worktreeState(root)); err != nil {
+		return state.Setup{}, err
+	}
+	return setup, nil
+}
+
 func worktreeState(root string) string {
 	status, err := gitutil.Status(root)
 	if err != nil {

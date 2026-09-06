@@ -70,6 +70,9 @@ func (app *workflowApp) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if app.navOpen {
 			return app, app.updateNavigation(message.Keystroke())
 		}
+		if app.activeCapturesTextInput() {
+			return app, app.updateActive(message)
+		}
 		if message.Keystroke() == "g" && app.screen != screenHome {
 			return app, app.navigate(actionHome)
 		}
@@ -148,6 +151,22 @@ func workflowView(content string, inherited ...tea.View) tea.View {
 func (app *workflowApp) activeUsesNavigationKey() bool {
 	reviewModel, ok := app.active.(*reviewModel)
 	return ok && reviewModel.tab == tabDiff
+}
+
+func (app *workflowApp) activeCapturesTextInput() bool {
+	switch model := app.active.(type) {
+	case *definitionModel:
+		return model.editing
+	case *documentModel:
+		return model.editing
+	case *historyModel:
+		return model.searching
+	case *planCaptureModel:
+		return model.mode == planCapturePaste
+	case *contextExplorerModel:
+		return model.querying
+	}
+	return false
 }
 
 func runWorkflowApp(root string, start shellScreen, input io.Reader, output io.Writer) (bool, error) {
@@ -359,27 +378,33 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 		}
 		model = newPlanModel(app.root, stored)
 	case screenReview:
-		snapshot, err := loadReviewSnapshot(app.root)
-		if err != nil {
-			return err
-		}
-		reviewModel := newReviewModel(app.root, snapshot)
-		app.reviewed = &snapshot
-		if via == actionEvidence {
-			reviewModel.tab = tabEvidence
-		}
-		reviewModel.recordEvent(state.TimelineActualRefreshed, "actual state refreshed for review")
-		model = reviewModel
-	case screenSummary:
-		if app.reviewed == nil {
-			snapshot, err := loadReviewSnapshot(app.root)
+		refreshed := true
+		var snapshot reviewSnapshot
+		if via == actionSummary && app.reviewed != nil {
+			snapshot = *app.reviewed
+			refreshed = false
+		} else {
+			loaded, err := loadReviewSnapshot(app.root)
 			if err != nil {
 				return err
 			}
+			snapshot = loaded
 			app.reviewed = &snapshot
 		}
-		reviewModel := newReviewModel(app.root, *app.reviewed)
-		reviewModel.tab = tabSummary
+		reviewModel := newReviewModel(app.root, snapshot)
+		switch via {
+		case actionReviewChanges:
+			reviewModel.tab = tabChanges
+		case actionIntegration:
+			reviewModel.tab = tabIntegration
+		case actionEvidence:
+			reviewModel.tab = tabEvidence
+		case actionDiff:
+			reviewModel.tab = tabDiff
+		}
+		if refreshed {
+			reviewModel.recordEvent(state.TimelineActualRefreshed, "actual state refreshed for review")
+		}
 		model = reviewModel
 	case screenComplete:
 		if app.reviewed == nil {
@@ -391,11 +416,11 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 		}
 		model = newCompletionModel(*app.reviewed)
 	case screenHistory:
-		dir, records, err := loadHistory(app.root)
+		dir, records, active, err := loadHistory(app.root)
 		if err != nil {
 			return err
 		}
-		model = newHistoryModel(dir, records, false)
+		model = newHistoryModel(app.root, dir, records, active)
 	case screenExplore:
 		model = newContextExplorer(app.root, "", nil)
 	case screenDocuments:
@@ -603,7 +628,10 @@ func (app *workflowApp) navigationScreen() canonicalScreen {
 		{ID: "navigation.change", Title: "CHANGE", Items: changeItems, EmptyReason: "No active change"},
 		{ID: "navigation.review", Title: "REVIEW", Items: []screenItem{
 			{ID: "navigation.summary", Label: "Summary", Selectable: true, Action: screenAction(actionSummary)},
-			{ID: "navigation.changes", Label: "Changes", Selectable: true, Action: screenAction(actionReview)},
+			{ID: "navigation.changes", Label: "Changes", Selectable: true, Action: screenAction(actionReviewChanges)},
+			{ID: "navigation.integration", Label: "Integration", Selectable: true, Action: screenAction(actionIntegration)},
+			{ID: "navigation.evidence", Label: "Evidence", Selectable: true, Action: screenAction(actionEvidence)},
+			{ID: "navigation.diff", Label: "Diff", Selectable: true, Action: screenAction(actionDiff)},
 		}},
 		{ID: "navigation.global", Items: []screenItem{
 			{ID: "navigation.explore", Label: "Explore", Selectable: true, Action: screenAction(actionExplore)},
@@ -664,7 +692,11 @@ func (app *workflowApp) navigationRail(width, height int) string {
 			lines = append(lines, "  "+uiMutedStyle.Render(section.EmptyReason))
 		}
 		for _, item := range section.Items {
-			lines = append(lines, "  "+item.Label)
+			label := item.Label
+			if item.ID == "navigation.plan" {
+				label = strings.Replace(label, "Implementation Plan", "Plan", 1)
+			}
+			lines = append(lines, "  "+label)
 		}
 		lines = append(lines, "")
 	}

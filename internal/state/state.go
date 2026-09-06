@@ -29,13 +29,14 @@ type SetupCriterion struct {
 }
 
 type Setup struct {
-	Stage    string           `json:"stage"`
-	Editing  bool             `json:"editing,omitempty"`
-	Title    string           `json:"title,omitempty"`
-	Outcome  string           `json:"outcome,omitempty"`
-	Limits   string           `json:"limits,omitempty"`
-	Input    string           `json:"input,omitempty"`
-	Criteria []SetupCriterion `json:"criteria,omitempty"`
+	Stage        string           `json:"stage"`
+	Editing      bool             `json:"editing,omitempty"`
+	Title        string           `json:"title,omitempty"`
+	Outcome      string           `json:"outcome,omitempty"`
+	Limits       string           `json:"limits,omitempty"`
+	Input        string           `json:"input,omitempty"`
+	Criteria     []SetupCriterion `json:"criteria,omitempty"`
+	OriginSpecID string           `json:"origin_spec_id,omitempty"`
 }
 
 type Metadata struct {
@@ -48,6 +49,7 @@ type Metadata struct {
 	StartedAt      time.Time       `json:"started_at,omitempty"`
 	BaseSHA        string          `json:"base_sha,omitempty"`
 	GitState       string          `json:"git_state,omitempty"`
+	OriginSpecID   string          `json:"origin_spec_id,omitempty"`
 	Setup          *Setup          `json:"setup,omitempty"`
 	VerifyCommands []string        `json:"verify_commands,omitempty"`
 	SandboxSession *SandboxSession `json:"sandbox_session,omitempty"`
@@ -66,6 +68,7 @@ type Verification struct {
 
 type History struct {
 	SpecID                 string            `json:"spec_id,omitempty"`
+	OriginSpecID           string            `json:"origin_spec_id,omitempty"`
 	Title                  string            `json:"title"`
 	Intent                 string            `json:"intent,omitempty"`
 	Scope                  string            `json:"scope,omitempty"`
@@ -307,11 +310,21 @@ func (workspace Workspace) recordSpecStart(now time.Time) error {
 	if err := workspace.AppendTimeline(created); err != nil {
 		return err
 	}
-	return workspace.AppendTimeline(TimelineEvent{
+	if err := workspace.AppendTimeline(TimelineEvent{
 		SchemaVersion: ArtifactSchemaVersion, ID: workspace.SpecID + ":baseline", Type: TimelineBaselineCaptured,
 		Actor: "spec", Source: "git", OccurredAt: now.UTC(),
 		Details: TimelineDetails{SpecID: workspace.SpecID, BaselineSHA: workspace.BaseSHA},
-	})
+	}); err != nil {
+		return err
+	}
+	if workspace.OriginSpecID != "" {
+		return workspace.AppendTimeline(TimelineEvent{
+			SchemaVersion: ArtifactSchemaVersion, ID: workspace.SpecID + ":follow-up", Type: TimelineFollowUpStarted,
+			Actor: "human", Source: "history", OccurredAt: now.UTC(),
+			Details: TimelineDetails{SpecID: workspace.OriginSpecID, Summary: "follow-up to " + workspace.OriginSpecID},
+		})
+	}
+	return nil
 }
 
 func (workspace *Workspace) Start(title, baseSHA string, now time.Time, gitState ...string) error {
@@ -326,6 +339,7 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time, gitState
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
 	workspace.GitState = firstString(gitState)
+	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {
@@ -347,6 +361,7 @@ func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setu
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
 	workspace.GitState = firstString(gitState)
+	workspace.OriginSpecID = strings.TrimSpace(setup.OriginSpecID)
 	workspace.Setup = &copy
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {
@@ -416,6 +431,7 @@ func (workspace *Workspace) Abandon() error {
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
 	workspace.GitState = ""
+	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	return workspace.saveMetadata()
@@ -498,6 +514,9 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	if record.SpecID == "" {
 		record.SpecID = workspace.SpecID
 	}
+	if record.OriginSpecID == "" {
+		record.OriginSpecID = workspace.OriginSpecID
+	}
 	if record.Intent == "" {
 		record.Intent = record.Title
 	}
@@ -549,6 +568,7 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
 	workspace.GitState = ""
+	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {

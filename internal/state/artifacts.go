@@ -86,6 +86,7 @@ const (
 	TimelineReviewDecision     TimelineEventType = "review_decision"
 	TimelineChangesRequested   TimelineEventType = "changes_requested"
 	TimelineSpecCompleted      TimelineEventType = "spec_completed"
+	TimelineFollowUpStarted    TimelineEventType = "follow_up_started"
 )
 
 type TimelineEvent struct {

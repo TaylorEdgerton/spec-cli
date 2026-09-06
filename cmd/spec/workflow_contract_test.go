@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,10 +14,181 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
+	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	"github.com/charmbracelet/x/ansi"
 )
+
+func TestRootSuspendsNavigationShortcutsWhileTextEditorsHaveFocus(t *testing.T) {
+	definition := newDefinitionModel(state.Setup{Title: "Intent"}, "clean")
+	definition.startEdit(0)
+	app := &workflowApp{screen: screenDefinition, active: definition}
+	for _, letter := range "gnq" {
+		app.Update(key(letter, string(letter)))
+	}
+	app.Update(tea.PasteMsg{Content: " pasted"})
+	if app.navOpen || app.quitConfirm || app.screen != screenDefinition || !strings.Contains(definition.editor.value, "gnq pasted") {
+		t.Fatalf("definition typing triggered root navigation: screen=%q nav=%v quit=%v value=%q", app.screen, app.navOpen, app.quitConfirm, definition.editor.value)
+	}
+	if plain := ansi.Strip(definition.View().Content); strings.Contains(plain, "g home") || !strings.Contains(plain, "Esc cancel edit") {
+		t.Fatalf("definition editor advertised inactive root shortcuts:\n%s", plain)
+	}
+
+	documents := newDocumentModel()
+	documents.editing = true
+	documents.editor = newLineEditor("")
+	app.active, app.screen = documents, screenDocuments
+	for _, letter := range "qng" {
+		app.Update(key(letter, string(letter)))
+	}
+	if app.navOpen || app.quitConfirm || app.screen != screenDocuments || documents.editor.value != "qng" {
+		t.Fatalf("document typing triggered root navigation: screen=%q nav=%v quit=%v value=%q", app.screen, app.navOpen, app.quitConfirm, documents.editor.value)
+	}
+	if plain := ansi.Strip(documents.View().Content); strings.Contains(plain, "g home") {
+		t.Fatalf("document editor advertised inactive root shortcuts:\n%s", plain)
+	}
+}
+
+func TestHistoryReopensCompletedSpecAsAnImmutableLinkedFollowUp(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	if err := workspace.Abandon(); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(workspace.Dir, "specs", "source.md")
+	if err := os.MkdirAll(filepath.Dir(archive), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archiveContent := "# Source\n\n## Intent\n\nImprove history\n\n## Scope\n\nKeep archives immutable\n\n## Acceptance Criteria\n\n- [x] Existing behaviour retained\n- [ ] Follow-up is linked\n"
+	if err := os.WriteFile(archive, []byte(archiveContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := state.History{SpecID: "SPEC-001", Title: "Improve history", Intent: "Improve history", Scope: "Keep archives immutable", BaseSHA: "oldbaseline", SpecArchive: "specs/source.md", FinishedAt: time.Now().Add(-time.Hour), CompletionAcknowledged: true, Plan: reviewPlanFixture(), Evidence: []state.EvidenceRun{{ID: "old-evidence"}}}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Dir, "history.jsonl"), append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, screenHistory)
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	app.Update(key('f', "f"))
+	history := app.active.(*historyModel)
+	if !history.followupConfirm {
+		t.Fatal("follow-up action did not ask for confirmation")
+	}
+	if loaded, _ := state.Load(root); loaded.Active {
+		t.Fatal("opening follow-up confirmation activated a Spec")
+	}
+	app.Update(key(tea.KeyRight, ""))
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenDefinition {
+		t.Fatalf("follow-up opened %q, want Definition", app.screen)
+	}
+	loaded, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := gitutil.Head(root)
+	if !loaded.Active || loaded.SpecID == record.SpecID || loaded.BaseSHA != head || loaded.OriginSpecID != record.SpecID || loaded.Setup == nil {
+		t.Fatalf("linked follow-up metadata = %+v", loaded.Metadata)
+	}
+	if loaded.Setup.Title != record.Intent || loaded.Setup.Outcome != record.Scope || len(loaded.Setup.Criteria) != 2 {
+		t.Fatalf("follow-up definition = %+v", loaded.Setup)
+	}
+	if plan, _ := loaded.Plan(); plan != nil {
+		t.Fatalf("follow-up silently reused plan: %+v", plan)
+	}
+	if evidenceRuns, _ := loaded.EvidenceRuns(); len(evidenceRuns) != 0 {
+		t.Fatalf("follow-up silently reused evidence: %+v", evidenceRuns)
+	}
+	events, _ := loaded.TimelineEvents()
+	foundLink := false
+	for _, event := range events {
+		if event.Type == state.TimelineFollowUpStarted && event.Details.SpecID == record.SpecID {
+			foundLink = true
+		}
+	}
+	if !foundLink {
+		t.Fatalf("follow-up timeline has no source link: %+v", events)
+	}
+	after, _ := os.ReadFile(archive)
+	if !bytes.Equal(before, after) {
+		t.Fatal("follow-up modified its source archive")
+	}
+	if _, err := saveDefinitionContract(root, *loaded.Setup, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := change.Done(root, "follow-up complete", time.Now())
+	if err != nil || finished.OriginSpecID != record.SpecID {
+		t.Fatalf("completed follow-up link = %+v, %v", finished, err)
+	}
+	completed, err := loaded.HistoryRecords()
+	if err != nil || len(completed) != 2 {
+		t.Fatalf("linked History records = %+v, %v", completed, err)
+	}
+	model := newHistoryModel(root, loaded.Dir, completed, false)
+	for selected, _ := model.selected(); selected.SpecID != record.SpecID; selected, _ = model.selected() {
+		model.move(1)
+	}
+	if plain := historyPlain(model); !strings.Contains(plain, "Follow-ups") || !strings.Contains(plain, finished.SpecID) {
+		t.Fatalf("source timeline does not expose the completed follow-up:\n%s", plain)
+	}
+	model.timeline = true
+	if plain := historyPlain(model); !strings.Contains(plain, "Follow-up started") || !strings.Contains(plain, finished.SpecID) {
+		t.Fatalf("source timeline does not derive its reverse follow-up link:\n%s", plain)
+	}
+}
+
+func TestHistoryFollowUpIsUnavailableWhileAnotherSpecIsActive(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	history := newHistoryModel(root, workspace.Dir, historyFixture(), true)
+	app := &workflowApp{root: root, screen: screenHistory, active: history}
+	app.Update(key('f', "f"))
+	if history.followupConfirm || !strings.Contains(history.status, "active Spec") {
+		t.Fatalf("active-Spec guard = confirm:%v status:%q", history.followupConfirm, history.status)
+	}
+}
+
+func TestWideNavigationRailUsesCompactUnambiguousStageLabels(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	app := newWorkflowApp(root, screenDefinition)
+	plain := ansi.Strip(app.navigationRail(24, 34))
+	if !strings.Contains(plain, "– Plan") || strings.Contains(plain, "Implementation Plan") {
+		t.Fatalf("wide navigation rail retained an ambiguous wrapped plan label:\n%s", plain)
+	}
+}
+
+func TestRootNavigationExposesAllFiveReviewDestinations(t *testing.T) {
+	screen := (&workflowApp{}).navigationScreen()
+	want := map[string]string{
+		"navigation.summary": actionSummary, "navigation.changes": actionReviewChanges,
+		"navigation.integration": actionIntegration, "navigation.evidence": actionEvidence,
+		"navigation.diff": actionDiff,
+	}
+	for _, item := range screen.selectableItems() {
+		if action, ok := want[item.ID]; ok {
+			if string(item.Action) != action {
+				t.Fatalf("%s action = %q, want %q", item.ID, item.Action, action)
+			}
+			delete(want, item.ID)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing review destinations: %+v", want)
+	}
+}
 
 func TestWorkflowScreensExposeCanonicalVisualAndNavigationOrder(t *testing.T) {
 	definition := newDefinitionModel(state.Setup{Title: "Intent"}, "clean").screen()
@@ -36,7 +208,7 @@ func TestWorkflowScreensExposeCanonicalVisualAndNavigationOrder(t *testing.T) {
 	if got := reviewModel.screen().selectableItemIDs(); len(got) == 0 || !strings.HasPrefix(got[0], "review.file.") {
 		t.Fatalf("review canonical rows = %v", got)
 	}
-	history := newHistoryModel(t.TempDir(), historyFixture(), false).screen()
+	history := newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false).screen()
 	if got := history.selectableItemIDs(); len(got) != len(historyFixture()) || !strings.HasPrefix(got[0], "history.") {
 		t.Fatalf("history canonical rows = %v", got)
 	}
@@ -313,7 +485,7 @@ func TestRootResponsiveNavigationRailOverlayAndMinimumSize(t *testing.T) {
 	wide.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
 	wideView := wide.View().Content
 	widePlain := ansi.Strip(wideView)
-	for _, expected := range []string{"CHANGE", "Intent & Scope", "REVIEW", "Explore", "History", "Home"} {
+	for _, expected := range []string{"CHANGE", "Intent & Scope", "REVIEW", "Summary", "Changes", "Integration", "Evidence", "Diff", "Explore", "History", "Home"} {
 		if !strings.Contains(widePlain, expected) {
 			t.Fatalf("wide navigation missing %q:\n%s", expected, widePlain)
 		}
@@ -439,7 +611,7 @@ func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(
 	reviewed = app.active.(*reviewModel)
 	reviewed.tab = tabEvidence
 	app.Update(key('s', "s"))
-	if app.screen != screenSummary {
+	if app.screen != screenReview {
 		t.Fatalf("evidence to summary = %q", app.screen)
 	}
 	summary := app.active.(*reviewModel)
@@ -548,9 +720,9 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 			model.tab = tabDiff
 			return model
 		}, []string{"Review · Diff", "Files", "Focused hunk", "Symbol"}},
-		{"history", func() contractModel { return newHistoryModel(t.TempDir(), historyFixture(), true) }, []string{"Spec history", "Date", "Spec", "Status", "Selected", "Files", "duration"}},
+		{"history", func() contractModel { return newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false) }, []string{"Spec history", "Date", "Spec", "Status", "Selected", "Files", "duration"}},
 		{"timeline", func() contractModel {
-			model := newHistoryModel(t.TempDir(), historyFixture(), false)
+			model := newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false)
 			model.timeline = true
 			return model
 		}, []string{"SPEC-002 · Timeline", "Timeline", "Spec created"}},
