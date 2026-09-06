@@ -7,7 +7,6 @@ import (
 
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
 	"github.com/TaylorEdgerton/spec-cli/internal/config"
-	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
 )
@@ -27,100 +26,6 @@ func runHome(input io.Reader, output io.Writer, interactive bool) error {
 	}
 	_, err := runWorkflowApp(root, screenHome, input, output)
 	return err
-}
-
-func homeMenuItems(active bool) []string {
-	primary := "Create a spec"
-	if active {
-		primary = "Resume Spec"
-	}
-	return []string{primary, "Explore codebase", "Recent changes", "Create a doc", "Exit"}
-}
-
-func resumeActiveSpec(root string, input io.Reader, output io.Writer) error {
-	workspace, err := state.Load(root)
-	if err != nil {
-		return err
-	}
-	if !workspace.Active {
-		return nil
-	}
-	if workspace.Setup != nil {
-		return runNew(nil, input, output, true)
-	}
-	if _, err := os.Stat(change.ActivePath(root)); os.IsNotExist(err) {
-		choice, stopped, chooseErr := runChoice(input, output, "Spec", "The active specification is missing.", []string{"Start a replacement Spec", "Exit"})
-		if chooseErr != nil || stopped || choice == 1 {
-			return chooseErr
-		}
-		return runNew(nil, input, output, true)
-	} else if err != nil {
-		return err
-	}
-	_, err = runShell(root, screenOverview, input, output)
-	return err
-}
-
-func runExploreCodebase(root string, input io.Reader, output io.Writer) (bool, error) {
-	return runContextExplorer(root, "", nil, input, output)
-}
-
-func findCodebaseContext(root, query string) ([]discovery.Result, error) {
-	return discovery.Find(root, discovery.Query{Intent: query})
-}
-
-func runRecentChanges(root string, input io.Reader, output io.Writer) (bool, error) {
-	for {
-		choice, stopped, err := runChoice(input, output, "Recent Changes", "", recentChangesMenuItems())
-		if err != nil || stopped {
-			return stopped, err
-		}
-		if choice == 2 {
-			return false, nil
-		}
-		// Both entries open the same completed-Spec history; "Code changes" simply
-		// starts with its stored file and line statistics already showing.
-		action, err := runHistory(root, input, output)
-		if err != nil || action == actionQuit {
-			return action == actionQuit, err
-		}
-	}
-}
-
-func recentChangesMenuItems() []string {
-	return []string{"Spec history", "Code changes", "Back"}
-}
-
-func runCreateDocument(root string, input io.Reader, output io.Writer) (bool, error) {
-	for {
-		choice, stopped, err := runChoice(input, output, "Create a Doc", "", createDocumentMenuItems())
-		if err != nil || stopped {
-			return stopped, err
-		}
-		switch choice {
-		case 0:
-			if err := runREADME(nil, output); err != nil {
-				return false, err
-			}
-		case 1:
-			title, back, stopped, err := runTextPrompt(input, output, "Create a Runbook", "Scenario title:", "", false, true)
-			if err != nil || stopped {
-				return stopped, err
-			}
-			if back {
-				continue
-			}
-			if err := runRunbook(root, []string{title}, output); err != nil {
-				return false, err
-			}
-		case 2:
-			return false, nil
-		}
-	}
-}
-
-func createDocumentMenuItems() []string {
-	return []string{"README", "Runbook", "Back"}
 }
 
 func editDefinition(root string) error {

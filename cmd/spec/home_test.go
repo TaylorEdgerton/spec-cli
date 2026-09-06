@@ -16,21 +16,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestHomeMenusReflectWorkspaceState(t *testing.T) {
-	if got, want := homeMenuItems(false), []string{"Create a spec", "Explore codebase", "Recent changes", "Create a doc", "Exit"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("idle menu = %v, want %v", got, want)
-	}
-	if got, want := homeMenuItems(true), []string{"Resume Spec", "Explore codebase", "Recent changes", "Create a doc", "Exit"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("active menu = %v, want %v", got, want)
-	}
-	if got, want := recentChangesMenuItems(), []string{"Spec history", "Code changes", "Back"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("recent changes menu = %v, want %v", got, want)
-	}
-	if got, want := createDocumentMenuItems(), []string{"README", "Runbook", "Back"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("document menu = %v, want %v", got, want)
-	}
-}
-
 func TestFramedHomeUsesOneCanonicalOrderForRenderingAndNavigation(t *testing.T) {
 	started := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
 	model := newHomeModel(homeData{
@@ -93,10 +78,7 @@ func TestExploreCodebaseDoesNotCreateOrActivateSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := findCodebaseContext(root, "how are groups mapped to permissions")
-	if err != nil {
-		t.Fatal(err)
-	}
+	results := discoverImplementationContext(root, state.Setup{Title: "how are groups mapped to permissions"})
 	if len(results) == 0 || results[0].Path != "internal/permissions/groups.go" {
 		t.Fatalf("results = %+v", results)
 	}
@@ -121,7 +103,7 @@ func TestBareSpecReportsResumableSetupWithoutTTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := workspace.BeginSetup("base", time.Now(), state.Setup{Stage: setupCriteria, Title: "Change"}); err != nil {
+	if err := workspace.BeginSetup("base", time.Now(), state.Setup{Stage: "criteria", Title: "Change"}); err != nil {
 		t.Fatal(err)
 	}
 	previous, err := os.Getwd()
