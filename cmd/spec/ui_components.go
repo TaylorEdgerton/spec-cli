@@ -94,6 +94,31 @@ func uiWorkflowBodyHeight(height int, header string) int {
 	return max(3, height-len(strings.Split(header, "\n"))-7)
 }
 
+func visibleItemRange(itemLines []int, offset, visibleLines int) (int, int) {
+	first, last := -1, -1
+	end := min(len(itemLines), offset+visibleLines)
+	for _, item := range itemLines[clamp(offset, 0, len(itemLines)):end] {
+		if item < 0 {
+			continue
+		}
+		if first < 0 {
+			first = item
+		}
+		last = item
+	}
+	return first, last
+}
+
+func uiRangeLabel(first, last, total int, noun string) string {
+	if total == 0 || first < 0 || last < 0 {
+		return fmt.Sprintf("0 / %d %s", total, noun)
+	}
+	if first == last {
+		return fmt.Sprintf("%d / %d %s", first+1, total, noun)
+	}
+	return fmt.Sprintf("%d–%d / %d %s", first+1, last+1, total, noun)
+}
+
 func defaultSize(width, height int) (int, int) {
 	if width <= 0 {
 		width = 100

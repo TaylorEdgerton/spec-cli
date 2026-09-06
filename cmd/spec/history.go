@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -459,16 +458,4 @@ func loadHistory(root string) (string, []state.History, bool, error) {
 	}
 	records, err := workspace.HistoryRecords()
 	return workspace.Dir, records, workspace.Active, err
-}
-
-func runHistory(root string, input io.Reader, output io.Writer) (string, error) {
-	dir, records, active, err := loadHistory(root)
-	if err != nil {
-		return actionQuit, err
-	}
-	final, err := tea.NewProgram(newHistoryModel(root, dir, records, active), tea.WithInput(input), tea.WithOutput(output)).Run()
-	if err != nil {
-		return actionQuit, err
-	}
-	return final.(*historyModel).nav, nil
 }

@@ -1,9 +1,5 @@
 package main
 
-import (
-	"io"
-)
-
 type shellScreen string
 
 const (
@@ -79,8 +75,4 @@ func screenForAction(action string) shellScreen {
 		return screenDocuments
 	}
 	return screenStay
-}
-
-func runShell(root string, start shellScreen, input io.Reader, output io.Writer) (bool, error) {
-	return runWorkflowApp(root, start, input, output)
 }

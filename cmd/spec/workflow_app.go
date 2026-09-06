@@ -491,7 +491,7 @@ func (app *workflowApp) saveDefinitionDraft() {
 }
 
 func discoverImplementationContext(root string, setup state.Setup) []discovery.Result {
-	results, err := discovery.Find(root, discovery.Query{Intent: setup.Title, Outcome: setup.Outcome})
+	results, err := discovery.Find(root, discoveryQuery(setup))
 	if err != nil {
 		return nil
 	}
