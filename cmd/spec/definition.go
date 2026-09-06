@@ -143,6 +143,9 @@ func (model *definitionModel) leave(action string) {
 }
 
 func (model *definitionModel) hints() [][2]string {
+	if model.editing {
+		return [][2]string{{"Enter", "save field"}, {"Tab", "save and next"}, {"Ctrl+Enter", "create"}, {"Esc", "cancel edit"}}
+	}
 	return [][2]string{{"Tab", "field"}, {"Enter", "edit/select"}, {"Ctrl+Enter", "create"},
 		{"?", "help"}, {"b", "back"}, {"g", "home"}}
 }

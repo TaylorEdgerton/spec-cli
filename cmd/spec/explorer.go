@@ -1060,9 +1060,9 @@ func (model *contextExplorerModel) renderFooter(width int) string {
 	}
 	switch {
 	case model.querying:
-		hints = [][2]string{{"enter", "search"}, {"esc", "cancel"}, {"g", "home"}}
+		hints = [][2]string{{"enter", "search"}, {"esc", "cancel"}}
 		if len(model.results) == 0 {
-			hints = [][2]string{{"enter", "search"}, {"esc", "back"}, {"g", "home"}}
+			hints = [][2]string{{"enter", "search"}, {"esc", "back"}}
 		}
 	case model.help:
 		hints = [][2]string{

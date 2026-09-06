@@ -101,7 +101,7 @@ func (model *documentModel) View() tea.View {
 	}
 	hints := [][2]string{{"↑/↓", "navigate"}, {"enter", "select"}, {"b/esc", "back"}, {"g", "home"}}
 	if model.editing {
-		hints = [][2]string{{"enter", "create"}, {"esc", "cancel"}, {"g", "home"}}
+		hints = [][2]string{{"enter", "create"}, {"esc", "cancel"}}
 	}
 	return tea.NewView(uiAppShell(width, height, "Spec · Create a Doc", strings.Join(lines, "\n"), uiKeyHints(hints, "    ")))
 }
