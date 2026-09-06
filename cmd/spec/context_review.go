@@ -23,13 +23,15 @@ type contextReviewModel struct {
 }
 
 func newContextReviewModel(results []discovery.Result) *contextReviewModel {
-	return &contextReviewModel{results: results}
+	// Results precede the two actions in canonical navigation order. Continue is
+	// deliberately the initial selection so Enter keeps the safe fast path.
+	return &contextReviewModel{results: results, cursor: len(results)}
 }
 
 func (model *contextReviewModel) screen() canonicalScreen {
 	context := make([]screenItem, 0, len(model.results))
 	for index, result := range model.results {
-		context = append(context, screenItem{ID: fmt.Sprintf("context.result.%d", index), Label: result.Path, Preview: result})
+		context = append(context, screenItem{ID: fmt.Sprintf("context.result.%d", index), Label: result.Path, Selectable: true, Preview: result})
 	}
 	actions := []screenItem{
 		{ID: "context.continue", Label: "Continue", Selectable: true, Action: screenAction(actionContinue)},
@@ -49,13 +51,13 @@ func (model *contextReviewModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch message.Keystroke() {
 		case "up", "k", "shift+tab":
-			model.cursor = wrap(model.cursor-1, 2)
+			model.cursor = wrap(model.cursor-1, len(model.results)+2)
 		case "down", "j", "tab":
-			model.cursor = wrap(model.cursor+1, 2)
+			model.cursor = wrap(model.cursor+1, len(model.results)+2)
 		case "pgup":
-			model.viewport = max(0, model.viewport-max(1, model.height/2))
+			model.movePage(-1)
 		case "pgdown":
-			model.viewport += max(1, model.height/2)
+			model.movePage(1)
 		case "enter":
 			model.nav = string(model.screen().activate())
 		case "b", "esc":
@@ -69,29 +71,76 @@ func (model *contextReviewModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (model *contextReviewModel) View() tea.View {
 	width, height := defaultSize(model.width, model.height)
-	lines := []string{uiTitleStyle.Render("Likely implementation context")}
+	capacity := model.resultCapacity()
+	resultLines, itemLines := model.resultLines()
+	selectedResult := -1
+	if model.cursor < len(model.results) {
+		selectedResult = model.cursor
+	}
+	selectedLine := -1
+	for index, itemIndex := range itemLines {
+		if itemIndex == selectedResult {
+			selectedLine = index
+			break
+		}
+	}
+	visible, next := (screenViewport{Height: capacity, Offset: model.viewport}).visible(resultLines, selectedLine)
+	model.viewport = next
+	first, last := visibleItemRange(itemLines, next, len(visible))
+	rangeText := uiRangeLabel(first, last, len(model.results), "results")
+	lines := []string{uiSplit(uiTitleStyle.Render("Likely implementation context"), uiMutedStyle.Render(rangeText), max(20, width-8))}
 	if len(model.results) == 0 {
 		lines = append(lines, "", uiEmptyState("", "No likely context was discovered; implementation can continue."))
-	}
-	for _, result := range model.results {
-		lines = append(lines, "", "  "+result.Path)
-		for _, symbol := range result.Symbols {
-			lines = append(lines, fmt.Sprintf("    %s  %s", symbol.Name, uiBadge(string(symbol.Capability), uiTeal)))
-			for _, related := range symbol.Related {
-				lines = append(lines, fmt.Sprintf("      ↳ %s · %s", related.Name, related.Relation))
-			}
-		}
+	} else {
+		lines = append(lines, visible...)
 	}
 	lines = append(lines, "")
 	for index, label := range []string{"Continue", "Skip"} {
 		row := "  [ " + label + " ]"
-		if index == model.cursor {
+		if len(model.results)+index == model.cursor {
 			row = uiSelectedRow("> [ "+label+" ]", 0)
 		}
 		lines = append(lines, row)
 	}
-	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "action"}, {"b", "back"}, {"g", "home"}}, "  ")
-	body, next := uiViewportBody(strings.Join(lines, "\n"), uiWorkflowBodyHeight(height, "Implementation context"), model.viewport, model.screen().selectedItemLabel())
-	model.viewport = next
+	footer := uiKeyHints([][2]string{{"↑/↓", "select"}, {"PgUp/PgDn", "page"}, {"enter", "action"}, {"b", "back"}, {"g", "home"}}, "  ")
+	body := strings.Join(lines, "\n")
 	return tea.NewView(uiAppShell(width, height, "Implementation context", body, footer))
+}
+
+func (model *contextReviewModel) resultCapacity() int {
+	_, height := defaultSize(model.width, model.height)
+	return max(3, uiWorkflowBodyHeight(height, "Implementation context")-5)
+}
+
+func (model *contextReviewModel) movePage(direction int) {
+	if len(model.results) == 0 {
+		return
+	}
+	step := max(2, model.resultCapacity()/2)
+	if model.cursor >= len(model.results) {
+		model.cursor = len(model.results) - 1
+	}
+	model.cursor = clamp(model.cursor+direction*step, 0, len(model.results)-1)
+}
+
+func (model *contextReviewModel) resultLines() ([]string, []int) {
+	var lines []string
+	var itemLines []int
+	for index, result := range model.results {
+		row := "  " + result.Path
+		if model.cursor == index {
+			row = uiSelectedRow("> "+result.Path, 0)
+		}
+		lines = append(lines, row)
+		itemLines = append(itemLines, index)
+		for _, symbol := range result.Symbols {
+			lines = append(lines, fmt.Sprintf("    %s  %s", symbol.Name, uiBadge(string(symbol.Capability), uiTeal)))
+			itemLines = append(itemLines, index)
+			for _, related := range symbol.Related {
+				lines = append(lines, fmt.Sprintf("      ↳ %s · %s", related.Name, related.Relation))
+				itemLines = append(itemLines, index)
+			}
+		}
+	}
+	return lines, itemLines
 }
