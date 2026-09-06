@@ -453,12 +453,53 @@ func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(
 	app.Update(workflowNavigateMsg{Action: actionSummary})
 	setReviewCursorByID(t, app.active.(*reviewModel), "review.complete")
 	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenComplete {
+		t.Fatalf("Complete Spec opened %q, want sign-off", app.screen)
+	}
+	if records, err := workspace.HistoryRecords(); err != nil || len(records) != 0 {
+		t.Fatalf("entering sign-off archived early: %+v, %v", records, err)
+	}
+	app.Update(key(tea.KeyEnter, ""))
 	if app.screen != screenHistory {
 		t.Fatalf("Complete Spec opened %q", app.screen)
 	}
 	records, err := workspace.HistoryRecords()
 	if err != nil || len(records) != 1 || records[0].BaseSHA == "" || records[0].Stats.Files == 0 {
 		t.Fatalf("archived history = %+v, %v", records, err)
+	}
+}
+
+func TestPersistentRootUsesAlternateScreenAndPassesDiffHunkKeys(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	app := newWorkflowApp(root, screenHome)
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	for _, state := range []struct {
+		name string
+		set  func()
+	}{
+		{"home", func() {}},
+		{"navigation", func() { app.openNavigation() }},
+		{"quit confirmation", func() { app.navOpen = false; app.quitConfirm = true }},
+	} {
+		state.set()
+		view := app.View()
+		if !view.AltScreen {
+			t.Fatalf("%s view did not request alternate screen", state.name)
+		}
+		if first := strings.Split(ansi.Strip(view.Content), "\n")[0]; !strings.HasPrefix(first, "╭") || !strings.HasSuffix(first, "╮") {
+			t.Fatalf("%s top frame is incomplete: %q", state.name, first)
+		}
+	}
+
+	reviewed := newReviewModel(root, reviewSnapshotFixture(reviewPlanFixture()))
+	reviewed.tab = tabDiff
+	for reviewed.diffFile() != "indexer/indexer.go" {
+		reviewed.move(1)
+	}
+	app.active, app.screen, app.navOpen, app.quitConfirm = reviewed, screenReview, false, false
+	app.Update(key('n', "n"))
+	if app.navOpen || reviewed.hunk != 1 {
+		t.Fatalf("root intercepted next-hunk key: nav=%v hunk=%d", app.navOpen, reviewed.hunk)
 	}
 }
 
@@ -499,6 +540,9 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 			model.tab = tabSummary
 			return model
 		}, []string{"Review · Summary", "[Summary]", "Original intent", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Review attention", "Evidence", "Complete Spec", "Request Changes"}},
+		{"complete", func() contractModel {
+			return newCompletionModel(reviewSnapshotFixture(reviewPlanFixture()))
+		}, []string{"Complete · Sign-off", "Original intent", "Final change", "Review attention", "Acceptance review", "Evidence", "Complete and archive Spec", "Return to implementation"}},
 		{"diff", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabDiff

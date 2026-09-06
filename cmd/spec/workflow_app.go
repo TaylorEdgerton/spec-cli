@@ -73,7 +73,7 @@ func (app *workflowApp) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.Keystroke() == "g" && app.screen != screenHome {
 			return app, app.navigate(actionHome)
 		}
-		if message.Keystroke() == "n" && app.screen != screenHome {
+		if message.Keystroke() == "n" && app.screen != screenHome && !app.activeUsesNavigationKey() {
 			app.openNavigation()
 			return app, nil
 		}
@@ -107,31 +107,47 @@ func (app *workflowApp) updateActive(message tea.Msg) tea.Cmd {
 
 func (app *workflowApp) View() tea.View {
 	if app.done {
-		return tea.NewView("")
+		return workflowView("")
 	}
 	width, height := defaultSize(app.width, app.height)
 	if width < homeMinWidth || height < homeMinHeight {
-		return tea.NewView(uiMinimumSize(width, height))
+		return workflowView(uiMinimumSize(width, height))
 	}
 	if app.quitConfirm {
-		return tea.NewView(app.quitConfirmationView(width, height))
+		return workflowView(app.quitConfirmationView(width, height))
 	}
 	if app.navOpen {
-		return tea.NewView(app.navigationOverlay(width, height))
+		return workflowView(app.navigationOverlay(width, height))
 	}
 	if app.active != nil {
-		content := app.active.View().Content
+		activeView := app.active.View()
+		content := activeView.Content
 		if app.screen == screenHome || width < explorerWideWidth {
-			return tea.NewView(content)
+			return workflowView(content, activeView)
 		}
 		rail := app.navigationRail(24, height)
-		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, rail, content))
+		return workflowView(lipgloss.JoinHorizontal(lipgloss.Top, rail, content), activeView)
 	}
 	body := "Workflow · " + string(app.screen)
 	if app.status != "" {
 		body += "\n\n" + uiMutedStyle.Render(app.status)
 	}
-	return tea.NewView(uiAppShell(width, height, "Spec", body, "b back   g home"))
+	return workflowView(uiAppShell(width, height, "Spec", body, "b back   g home"))
+}
+
+func workflowView(content string, inherited ...tea.View) tea.View {
+	view := tea.NewView(content)
+	view.AltScreen = true
+	if len(inherited) > 0 {
+		view.MouseMode = inherited[0].MouseMode
+		view.OnMouse = inherited[0].OnMouse
+	}
+	return view
+}
+
+func (app *workflowApp) activeUsesNavigationKey() bool {
+	reviewModel, ok := app.active.(*reviewModel)
+	return ok && reviewModel.tab == tabDiff
 }
 
 func runWorkflowApp(root string, start shellScreen, input io.Reader, output io.Writer) (bool, error) {
@@ -284,7 +300,7 @@ func (app *workflowApp) navigate(action string) tea.Cmd {
 	if action == actionComplete {
 		var completion bytes.Buffer
 		if err := completeReviewedSpec(app.root, &completion); err != nil {
-			app.status = err.Error()
+			app.setActiveStatus(err.Error())
 			return nil
 		}
 		app.stack = []shellScreen{screenHome}
@@ -365,6 +381,15 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 		reviewModel := newReviewModel(app.root, *app.reviewed)
 		reviewModel.tab = tabSummary
 		model = reviewModel
+	case screenComplete:
+		if app.reviewed == nil {
+			snapshot, err := loadReviewSnapshot(app.root)
+			if err != nil {
+				return err
+			}
+			app.reviewed = &snapshot
+		}
+		model = newCompletionModel(*app.reviewed)
 	case screenHistory:
 		dir, records, err := loadHistory(app.root)
 		if err != nil {
@@ -477,6 +502,8 @@ func modelNavigation(model tea.Model) string {
 		return model.nav
 	case *reviewModel:
 		return model.nav
+	case *completionModel:
+		return model.nav
 	case *historyModel:
 		return model.nav
 	case *contextReviewModel:
@@ -503,6 +530,8 @@ func clearModelNavigation(model tea.Model) {
 		model.nav = actionNone
 	case *reviewModel:
 		model.nav = actionNone
+	case *completionModel:
+		model.nav = actionNone
 	case *historyModel:
 		model.nav = actionNone
 	case *contextReviewModel:
@@ -522,6 +551,8 @@ func (app *workflowApp) setActiveStatus(status string) {
 	case *homeModel:
 		model.status = status
 	case *documentModel:
+		model.status = status
+	case *completionModel:
 		model.status = status
 	}
 }
@@ -562,7 +593,7 @@ func (app *workflowApp) navigationScreen() canonicalScreen {
 				case "evidence":
 					action = actionEvidence
 				case "complete":
-					action = actionHistory
+					action = actionCompletion
 				}
 				changeItems = append(changeItems, screenItem{ID: "navigation." + stage.ID, Label: marker + " " + stage.Label, Selectable: true, Action: screenAction(action)})
 			}
