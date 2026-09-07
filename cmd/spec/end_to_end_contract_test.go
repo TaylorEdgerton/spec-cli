@@ -130,7 +130,7 @@ func TestDisableAutoIndexWorkflowFromHomeThroughHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	capture.readClipboard = func() (string, error) { return "```spec-plan\n" + string(canonical) + "\n```", nil }
-	app.Update(key(tea.KeyEnter, ""))
+	app.Update(key('v', "v"))
 	app.Update(key(tea.KeyEnter, ""))
 	if !planPromptCopied || app.screen != screenPlan {
 		t.Fatalf("clipboard plan path did not reach accepted Plan: copied=%v screen=%q", planPromptCopied, app.screen)
