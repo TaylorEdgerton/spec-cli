@@ -71,25 +71,29 @@ type reviewSnapshot struct {
 	Evidence                               evidence.Report
 	Hunks                                  map[string][]review.HunkReview
 	RefreshedAt                            time.Time
+	OriginalProjection                     review.Projection
+	PlanStale                              bool
+	AmendPlan                              bool
 }
 
 type reviewModel struct {
-	root          string
-	snap          reviewSnapshot
-	tab           reviewTab
-	cursors       map[reviewTab]int
-	hunk          int
-	diffFocused   bool
-	diffScroll    int
-	filter        review.FileStatus
-	status        string
-	decision      reviewDecision
-	width, height int
-	done          bool
-	help          bool
-	nav           string
-	viewport      int
-	listViewports map[reviewTab]int
+	compareOriginal bool
+	root            string
+	snap            reviewSnapshot
+	tab             reviewTab
+	cursors         map[reviewTab]int
+	hunk            int
+	diffFocused     bool
+	diffScroll      int
+	filter          review.FileStatus
+	status          string
+	decision        reviewDecision
+	width, height   int
+	done            bool
+	help            bool
+	nav             string
+	viewport        int
+	listViewports   map[reviewTab]int
 
 	refresh  func(string) (reviewSnapshot, error)
 	record   func(string, state.TimelineEvent) error
@@ -135,7 +139,7 @@ func (m *reviewModel) screen() canonicalScreen {
 			}
 		}
 	case tabIntegration:
-		for index, item := range m.snap.Projection.Integrations {
+		for index, item := range m.projection().Integrations {
 			items = append(items, screenItem{ID: fmt.Sprintf("review.integration.%d", index), Label: item.Symbol, Detail: item.Relationship, Selectable: true, Preview: item})
 		}
 	case tabEvidence:
@@ -227,6 +231,15 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 		m.moveHunk(1)
 	case "p":
 		m.moveHunk(-1)
+	case "l":
+		m.leave(actionPlan)
+		return tea.Quit
+	case "v":
+		if m.snap.Plan != nil && len(m.snap.Plan.Amendments) > 0 {
+			m.compareOriginal = !m.compareOriginal
+			m.cursors = map[reviewTab]int{}
+			m.filter, m.viewport, m.hunk = "", 0, 0
+		}
 	case "f":
 		m.cycleFilter()
 	case "d":
@@ -265,6 +278,13 @@ func (m *reviewModel) key(keystroke string) tea.Cmd {
 }
 
 func (m *reviewModel) leave(action string) { m.done, m.nav = true, action }
+
+func (m *reviewModel) projection() review.Projection {
+	if m.compareOriginal {
+		return m.snap.OriginalProjection
+	}
+	return m.snap.Projection
+}
 
 func (m *reviewModel) selectTab(tab reviewTab) {
 	m.tab, m.hunk, m.status, m.viewport = tab, 0, "", 0
@@ -355,7 +375,7 @@ func (m *reviewModel) showIntegration() {
 	}
 	path := m.diffFile()
 	if path != "" {
-		for index, item := range m.snap.Projection.Integrations {
+		for index, item := range m.projection().Integrations {
 			if item.Path == path {
 				m.cursors[tabIntegration] = index
 				m.selectTab(tabIntegration)
@@ -459,7 +479,7 @@ func (m *reviewModel) recordEvent(eventType state.TimelineEventType, summary str
 		Actor:         "human",
 		Source:        "review",
 		OccurredAt:    time.Now().UTC(),
-		Details:       state.TimelineDetails{SpecID: m.snap.SpecID, Summary: summary, Count: m.snap.Projection.Stats.Files},
+		Details:       state.TimelineDetails{SpecID: m.snap.SpecID, Summary: summary, Count: m.projection().Stats.Files},
 	}
 	if err := m.record(m.root, event); err != nil {
 		m.status = "Could not record the review event: " + err.Error()
@@ -467,8 +487,8 @@ func (m *reviewModel) recordEvent(eventType state.TimelineEventType, summary str
 }
 
 func (m *reviewModel) filteredFiles() []review.FileReview {
-	files := make([]review.FileReview, 0, len(m.snap.Projection.Files))
-	for _, file := range m.snap.Projection.Files {
+	files := make([]review.FileReview, 0, len(m.projection().Files))
+	for _, file := range m.projection().Files {
 		if m.filter == "" || file.Status == m.filter {
 			files = append(files, file)
 		}
@@ -477,8 +497,8 @@ func (m *reviewModel) filteredFiles() []review.FileReview {
 }
 
 func (m *reviewModel) diffFiles() []review.FileReview {
-	files := make([]review.FileReview, 0, len(m.snap.Projection.Files))
-	for _, file := range m.snap.Projection.Files {
+	files := make([]review.FileReview, 0, len(m.projection().Files))
+	for _, file := range m.projection().Files {
 		if file.Change != nil {
 			files = append(files, file)
 		}
@@ -588,6 +608,16 @@ func (m *reviewModel) View() tea.View {
 		fmt.Sprintf("%s · %s", m.snap.SpecID, shortSHA(m.snap.Baseline)),
 		max(1, width-4),
 	)
+	if m.snap.PlanStale {
+		header += "\nPlan changed · press r to refresh Review"
+	}
+	if m.snap.Plan != nil && len(m.snap.Plan.Amendments) > 0 {
+		comparison := "current"
+		if m.compareOriginal {
+			comparison = "original"
+		}
+		header += "\nComparing " + comparison + " plan · v switches comparison"
+	}
 	rendered := strings.Join(body, "\n")
 	anchor := ""
 	if item, ok := m.screen().selectedItem(); ok && m.tab != tabChanges && m.tab != tabDiff {
@@ -600,7 +630,7 @@ func (m *reviewModel) View() tea.View {
 func (m *reviewModel) footer() string { return uiKeyHints(m.hints(), "  ") }
 
 func (m *reviewModel) hints() [][2]string {
-	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}}
+	hints := [][2]string{{"tab", "view"}, {"↑/↓", "select"}, {"l", "AI Plan"}}
 	if (m.tab == tabChanges || m.tab == tabDiff) && !m.diffFocused {
 		hints = append(hints, [2]string{"PgUp/PgDn", "page"})
 	}
@@ -698,7 +728,7 @@ func (m *reviewModel) changeList(width int, compact bool) (string, string) {
 	selectedIndex := clamp(m.cursors[tabChanges], 0, len(items)-1)
 	if compact {
 		matched, additional, untouched := 0, 0, 0
-		for _, file := range m.snap.Projection.Files {
+		for _, file := range m.projection().Files {
 			switch file.Status {
 			case review.StatusMatched:
 				matched++
@@ -938,16 +968,16 @@ func evidenceDetails(item evidence.Item) []string {
 			modified = "YES"
 		}
 		lines = append(lines,
-			uiMutedStyle.Render("    failed against baseline "+emptyAs(baseline, "unknown")),
+			uiMutedStyle.Render("    failed against starting state "+emptyAs(baseline, "unknown")),
 			uiEvidenceStyle.Render("    ✓ now passes"),
-			uiMutedStyle.Render("    test modified after baseline: "+modified))
+			uiMutedStyle.Render("    test modified after starting state: "+modified))
 	}
 	if item.Category == evidence.CategoryExisting && item.Status != "parser_error" {
 		baseline := "unknown"
 		if len(item.Observations) > 0 && item.Observations[0].BaselineSHA != "" {
 			baseline = shortSHA(item.Observations[0].BaselineSHA)
 		}
-		lines = append(lines, uiMutedStyle.Render("    baseline "+baseline+" · "+strings.ToUpper(emptyAs(item.Status, "unknown"))))
+		lines = append(lines, uiMutedStyle.Render("    starting state "+baseline+" · "+strings.ToUpper(emptyAs(item.Status, "unknown"))))
 	}
 	if item.Category == evidence.CategoryManual {
 		lines = append(lines, uiMutedStyle.Render("    manual claim · "+emptyAs(item.Command, "no command recorded")))
@@ -1179,7 +1209,7 @@ func yesMark(value string) string {
 }
 
 func (m *reviewModel) integrationTouches(path, symbol string) bool {
-	for _, item := range m.snap.Projection.Integrations {
+	for _, item := range m.projection().Integrations {
 		if item.Path == path || (symbol != "" && (item.Symbol == symbol || item.Parent == symbol)) {
 			return true
 		}
@@ -1188,7 +1218,7 @@ func (m *reviewModel) integrationTouches(path, symbol string) bool {
 }
 
 func (m *reviewModel) summaryBody(width int) []string {
-	stats := m.snap.Projection.Stats
+	stats := m.projection().Stats
 	compact := m.height > 0 && m.height <= 24
 	proseWidth := max(20, width-8)
 	tests := 0
@@ -1206,19 +1236,28 @@ func (m *reviewModel) summaryBody(width int) []string {
 	}
 	if compact {
 		lines = append(lines, uiTitleStyle.Render("Actual change"),
-			fmt.Sprintf("  Files %d · Lines +%d -%d · Tests %d · Reviewability %s", stats.Files, stats.Additions, stats.Deletions, tests, strings.ToUpper(string(m.snap.Projection.Reviewability))))
+			fmt.Sprintf("  Files %d · Lines +%d -%d · Tests %d · Reviewability %s", stats.Files, stats.Additions, stats.Deletions, tests, strings.ToUpper(string(m.projection().Reviewability))))
 	} else {
 		lines = append(lines,
 			uiTitleStyle.Render("Actual change"),
 			fmt.Sprintf("  %-14s %-14s %-14s %s", "Files", "Lines", "Tests", "Reviewability"),
 			fmt.Sprintf("  %-14d %-14s %-14d %s", stats.Files,
 				fmt.Sprintf("+%d -%d", stats.Additions, stats.Deletions), tests,
-				strings.ToUpper(string(m.snap.Projection.Reviewability))))
+				strings.ToUpper(string(m.projection().Reviewability))))
 	}
 	if m.snap.Plan != nil {
 		drift := m.snap.Projection.Drift
-		lines = append(lines, uiTitleStyle.Render("Plan vs actual"),
+		title := "Original plan vs actual"
+		if len(m.snap.Plan.Amendments) > 0 {
+			original := m.snap.OriginalProjection.Drift
+			lines = append(lines, uiTitleStyle.Render(title), fmt.Sprintf("  Matched %d   Additional %d   Planned but untouched %d", original.Matched, original.Additional, original.Untouched))
+			title = "Current plan vs actual"
+		}
+		lines = append(lines, uiTitleStyle.Render(title),
 			fmt.Sprintf("  Matched %d   Additional %d   Planned but untouched %d", drift.Matched, drift.Additional, drift.Untouched))
+		if m.snap.Plan.AfterChanges && (m.snap.Plan.Original == nil || m.snap.Plan.Original.AfterChanges) {
+			lines = append(lines, uiMutedStyle.Render("  First plan received after repository changes."))
+		}
 	}
 	lines = append(lines, uiTitleStyle.Render("Review attention"))
 	attention := projectReviewAttention(m.snap)
@@ -1356,7 +1395,7 @@ func projectReviewAttention(snapshot reviewSnapshot) []reviewAttentionItem {
 		add("acceptance", fmt.Sprintf("%d acceptance %s not been reviewed", unreviewed, noun), attentionReview, tabEvidence)
 	}
 	if snapshot.Projection.Stats.Files > overviewLargeDriftFiles {
-		add("large-baseline-drift", fmt.Sprintf("%d files changed since baseline; the review may include unrelated work", snapshot.Projection.Stats.Files), attentionReview, tabChanges)
+		add("large-baseline-drift", fmt.Sprintf("%d changed files may include unrelated work", snapshot.Projection.Stats.Files), attentionReview, tabChanges)
 	}
 	return items
 }
@@ -1391,6 +1430,17 @@ func loadReviewSnapshot(root string) (reviewSnapshot, error) {
 	// Discovery is advisory: a failure leaves the actual-change review usable.
 	discovered, _ := findReviewContext(root, discovery.Query{Intent: snapshot.Intent, Outcome: snapshot.Scope})
 	snapshot.Projection = review.Project(snapshot.Plan, changes, discovered)
+	snapshot.AmendPlan, err = workspace.PlanNeedsAmendment()
+	if err != nil {
+		return snapshot, err
+	}
+	if snapshot.Plan != nil {
+		original := *snapshot.Plan
+		if original.Original != nil {
+			original.Plan = original.Original.Plan
+		}
+		snapshot.OriginalProjection = review.Project(&original, changes, discovered)
+	}
 	symbols := symbolsByPath(discovered)
 	for _, changed := range changes {
 		hunks, err := gitutil.Hunks(root, workspace.BaseSHA, changed)

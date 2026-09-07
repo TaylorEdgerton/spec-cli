@@ -225,7 +225,7 @@ func TestReviewAttentionProjectionIsDeterministicAndRoutesToOwningViews(t *testi
 func TestReviewSummaryShowsHierarchyAndEmptyViewsExplainMissingFacts(t *testing.T) {
 	model := newReviewFixtureModel(t, reviewPlanFixture())
 	plain := reviewPlain(model)
-	assertTextOrder(t, plain, "Original intent", "Actual change", "Plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
+	assertTextOrder(t, plain, "Original intent", "Actual change", "Original plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
 	for _, expected := range []string{"Add an option to disable automatic indexing", "4", "+38", "-6", "Matched 2", "Additional 2", "Existing tests", "New tests"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("summary missing %q:\n%s", expected, plain)
@@ -319,7 +319,7 @@ func TestReviewTabsRenderTheirOwnContract(t *testing.T) {
 		{tabSummary, []string{"Add an option to disable automatic indexing", "Disable automatic indexing", "Actual change", "Review attention", "Evidence"}},
 		{tabChanges, []string{"Matched", "Additional", "untouched", "config/config.go", "cmd/spec/config.go", "old_indexer.go"}},
 		{tabIntegration, []string{"Existing-code boundaries", "ensureIndex", "precise", "structural", "planned"}},
-		{tabEvidence, []string{"TestAutoIndexCanBeDisabled", "TestConfigAutoIndexFalse", "baseline", "manual", "stale"}},
+		{tabEvidence, []string{"TestAutoIndexCanBeDisabled", "TestConfigAutoIndexFalse", "starting state", "manual", "stale"}},
 		{tabDiff, []string{"indexer/indexer.go", "files", "Focused hunk", "Symbol"}},
 	}
 	for _, test := range tests {
@@ -347,13 +347,13 @@ func TestReviewSummaryFollowsTheInformationHierarchy(t *testing.T) {
 		"Original intent", "Add an option to disable automatic indexing",
 		"Implementation plan", "Disable automatic indexing",
 		"Actual change", "Files",
-		"Plan vs actual", "Matched",
+		"Original plan vs actual", "Matched",
 		"Review attention", "Evidence", "Complete Spec", "Request Changes",
 	)
 
 	withoutPlan := newReviewFixtureModel(t, nil)
 	plain := reviewPlain(withoutPlan)
-	if strings.Contains(plain, "Plan vs actual") {
+	if strings.Contains(plain, "Original plan vs actual") {
 		t.Fatalf("absent plan still rendered drift:\n%s", plain)
 	}
 	for _, expected := range []string{"Original intent", "No implementation plan was submitted", "Actual change", "Evidence"} {
@@ -607,8 +607,8 @@ func TestReviewEvidenceTabExposesProvenanceAndActions(t *testing.T) {
 	}
 	plain := reviewPlain(model)
 	for _, expected := range []string{
-		"Behaviour reproduced", "TestAutoIndexCanBeDisabled", "failed against baseline a1b2c3d",
-		"test modified after baseline: NO", "Added during implementation", "TestConfigAutoIndexFalse",
+		"Behaviour reproduced", "TestAutoIndexCanBeDisabled", "failed against starting state a1b2c3d",
+		"test modified after starting state: NO", "Added during implementation", "TestConfigAutoIndexFalse",
 		"manual", "checked the CLI by hand", "stale", "Fail → pass", "1",
 	} {
 		if !strings.Contains(plain, expected) {
