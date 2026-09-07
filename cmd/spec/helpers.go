@@ -142,7 +142,7 @@ func cmdCheck(args []string) error {
 	ok := true
 	printCheck(true, "Git repository is present")
 	hasBaseline := gitutil.HasBaseline(root)
-	printCheck(hasBaseline, "baseline commit is present")
+	printCheck(hasBaseline, "starting state commit is present")
 	ok = ok && hasBaseline
 	excluded, excludeErr := gitutil.ActiveSpecExcluded(root)
 	localExcludeReady := excludeErr == nil && excluded

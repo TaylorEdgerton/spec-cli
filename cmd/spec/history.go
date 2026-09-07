@@ -253,6 +253,37 @@ func (m *historyModel) openSelected() {
 		return
 	}
 	m.spec, m.status = content, ""
+	if record.Plan != nil {
+		original := record.Plan.Submission()
+		if record.Plan.Original != nil {
+			original = *record.Plan.Original
+		}
+		m.spec += archivedPlanText("Original plan", original)
+		for i, amendment := range record.Plan.Amendments {
+			m.spec += archivedPlanText(fmt.Sprintf("Amendment %d", i+1), amendment)
+		}
+		m.spec += archivedPlanText("Current plan", record.Plan.Submission())
+	}
+}
+
+func archivedPlanText(title string, submission state.PlanSubmission) string {
+	lines := []string{"", "## " + title, "", submission.Plan.Summary, "", "Submitted " + submission.SubmittedAt.UTC().Format(time.RFC3339) + " · " + string(submission.Source)}
+	if submission.AfterChanges {
+		lines = append(lines, "Received after repository changes.")
+	}
+	for _, file := range submission.Plan.Files {
+		lines = append(lines, "- "+string(file.Action)+" "+file.Path+": "+file.Reason)
+	}
+	for _, point := range submission.Plan.IntegrationPoints {
+		lines = append(lines, "- "+point.ExistingSymbol+" → "+point.Relationship+" → "+point.PlannedChange)
+	}
+	for _, check := range submission.Plan.Verification {
+		lines = append(lines, "- Verify: "+check.Behaviour+" · "+check.LikelyLocation)
+	}
+	for _, uncertainty := range submission.Plan.Uncertainties {
+		lines = append(lines, "- Uncertainty: "+uncertainty)
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func (m *historyModel) View() tea.View {
@@ -342,7 +373,7 @@ func (m *historyModel) body(width int) []string {
 	if strings.TrimSpace(record.Summary) != "" {
 		lines = append(lines, uiTitleStyle.Render("Completion summary"), uiIndentedProse(record.Summary, width, 2))
 	}
-	lines = append(lines, fmt.Sprintf("  Baseline %s  ·  archive %s",
+	lines = append(lines, fmt.Sprintf("  Starting state %s  ·  archive %s",
 		emptyDash(shortSHA(record.BaseSHA)), emptyDash(record.SpecArchive)))
 	if reason := m.followUpUnavailable(record); reason != "" {
 		lines = append(lines, uiMutedStyle.Render("  "+reason))
@@ -380,7 +411,7 @@ func (m *historyModel) followUpConfirmationBody(width int) []string {
 	body := strings.Join([]string{
 		uiTitleStyle.Render("Reopen as follow-up?"), "",
 		uiIndentedProse(record.Title, copyWidth, 2), "",
-		uiProse("A new Spec ID and current Git baseline will be used.", copyWidth),
+		uiProse("A new Spec ID and current Git starting state will be used.", copyWidth),
 		uiProse("Intent, scope, and acceptance criteria will be copied; the archived plan and evidence remain historical.", copyWidth),
 		"", cancel + "    " + create,
 	}, "\n")

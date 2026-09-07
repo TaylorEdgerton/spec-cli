@@ -280,7 +280,7 @@ func TestHistoryFollowUpConfirmationIsSafeAndBoundedAtSupportedWidths(t *testing
 		content := model.View().Content
 		plain := ansi.Strip(content)
 		words := strings.Join(strings.Fields(plain), " ")
-		for _, expected := range []string{"Reopen as follow-up?", "new Spec ID", "current Git baseline", "archived", "plan and evidence", "Cancel", "Create linked Spec"} {
+		for _, expected := range []string{"Reopen as follow-up?", "new Spec ID", "current Git starting state", "archived", "plan and evidence", "Cancel", "Create linked Spec"} {
 			if !strings.Contains(words, expected) {
 				t.Fatalf("follow-up confirmation at %dx%d missing %q:\n%s", size[0], size[1], expected, plain)
 			}
