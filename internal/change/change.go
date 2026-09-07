@@ -23,7 +23,7 @@ func ActivePath(root string) string {
 func New(root, title string, now time.Time) (string, error) {
 	base, err := gitutil.Head(root)
 	if err != nil {
-		return "", fmt.Errorf("a baseline commit is required; commit the current project before `spec new`")
+		return "", fmt.Errorf("a starting state commit is required; commit the current project before `spec new`")
 	}
 	workspace, err := state.Load(root)
 	if err != nil {
@@ -72,6 +72,9 @@ func New(root, title string, now time.Time) (string, error) {
 		_ = os.Remove(path)
 		return "", err
 	}
+	if err := workspace.CaptureStartingState(); err != nil {
+		return "", err
+	}
 	return path, nil
 }
 
@@ -101,13 +104,16 @@ func BeginSetup(root, title string, now time.Time) (state.Setup, error) {
 	}
 	base, err := gitutil.Head(root)
 	if err != nil {
-		return state.Setup{}, fmt.Errorf("a baseline commit is required; commit the current project before `spec new`")
+		return state.Setup{}, fmt.Errorf("a starting state commit is required; commit the current project before `spec new`")
 	}
 	setup := state.Setup{Stage: "change", Title: strings.TrimSpace(title)}
 	if setup.Title != "" {
 		setup.Stage = "outcome"
 	}
 	if err := workspace.BeginSetup(base, now.UTC(), setup, worktreeState(root)); err != nil {
+		return state.Setup{}, err
+	}
+	if err := workspace.CaptureStartingState(); err != nil {
 		return state.Setup{}, err
 	}
 	return setup, nil
@@ -147,9 +153,12 @@ func BeginFollowUp(root string, record state.History, now time.Time) (state.Setu
 	}
 	base, err := gitutil.Head(root)
 	if err != nil {
-		return state.Setup{}, fmt.Errorf("a baseline commit is required before starting a follow-up")
+		return state.Setup{}, fmt.Errorf("a starting state commit is required before starting a follow-up")
 	}
 	if err := workspace.BeginSetup(base, now.UTC(), setup, worktreeState(root)); err != nil {
+		return state.Setup{}, err
+	}
+	if err := workspace.CaptureStartingState(); err != nil {
 		return state.Setup{}, err
 	}
 	return setup, nil

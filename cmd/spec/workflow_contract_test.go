@@ -165,7 +165,7 @@ func TestWideNavigationRailUsesCompactUnambiguousStageLabels(t *testing.T) {
 	root, _, _ := definitionRepository(t, false)
 	app := newWorkflowApp(root, screenDefinition)
 	plain := ansi.Strip(app.navigationRail(24, 34))
-	if !strings.Contains(plain, "– Plan") || strings.Contains(plain, "Implementation Plan") {
+	if !strings.Contains(plain, "AI Plan") || strings.Contains(plain, "Implementation Plan") || strings.Contains(plain, "– Plan") {
 		t.Fatalf("wide navigation rail retained an ambiguous wrapped plan label:\n%s", plain)
 	}
 }
@@ -196,7 +196,7 @@ func TestWorkflowScreensExposeCanonicalVisualAndNavigationOrder(t *testing.T) {
 		t.Fatalf("definition canonical order = %v, want %v", got, want)
 	}
 	overview := newOverviewModel(overviewData{Facts: overviewFacts{BaselineReady: true}}).screen()
-	if got, want := overview.selectableItemIDs(), []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review"}; !reflect.DeepEqual(got, want) {
+	if got, want := overview.selectableItemIDs(), []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review", "overview.next.explore"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("overview canonical NEXT actions = %v, want %v", got, want)
 	}
 	plan := newPlanModel(t.TempDir(), reviewPlanFixture()).screen()
@@ -226,7 +226,7 @@ func TestViewportKeepsCanonicalSelectionVisibleWithoutResizeClamp(t *testing.T) 
 }
 
 func TestShellPreservesWireframeHeaderRows(t *testing.T) {
-	plain := ansi.Strip(uiAppShell(80, 24, "SPEC-014 · Disable automatic indexing  OPEN\nGit: main · baseline a1b2c3d  12 min", "Intent\nAdd an option", "enter open stage  q exit"))
+	plain := ansi.Strip(uiAppShell(80, 24, "SPEC-014 · Disable automatic indexing  OPEN\nGit: main · starting state a1b2c3d  12 min", "Intent\nAdd an option", "enter open stage  q exit"))
 	lines := strings.Split(plain, "\n")
 	first, second := -1, -1
 	for index, line := range lines {
@@ -264,13 +264,13 @@ func TestPlanCaptureStartsWithChoiceAndClipboardPreviewPersistsOnlyOnAccept(t *t
 		t.Fatalf("plan capture did not start at the guided choice: %+v\n%s", model, ansi.Strip(model.View().Content))
 	}
 	plain := ansi.Strip(model.View().Content)
-	for _, expected := range []string{"copy plan prompt", "Import plan from clipboard", "Wait for `spec plan submit --stdin`", "Skip plan for this change", "never required"} {
+	for _, expected := range []string{"Copy planning prompt", "Paste AI plan", "spec plan submit --stdin", "Continue without plan"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("plan choice missing %q:\n%s", expected, plain)
 		}
 	}
 	model.readClipboard = func() (string, error) { return raw, nil }
-	model.Update(key(tea.KeyEnter, ""))
+	model.Update(key('v', "v"))
 	if model.mode != planCaptureClipboardPreview || model.plan.Summary == "" || model.decision != "" {
 		t.Fatalf("clipboard was not validated without persistence: %+v", model)
 	}
@@ -300,7 +300,7 @@ func TestPlanCaptureStartsWithChoiceAndClipboardPreviewPersistsOnlyOnAccept(t *t
 func TestPlanCaptureClipboardErrorFallsBackToManualPaste(t *testing.T) {
 	model := newPlanCaptureModel("")
 	model.readClipboard = func() (string, error) { return "not a plan", nil }
-	model.Update(key(tea.KeyEnter, ""))
+	model.Update(key('v', "v"))
 	if model.mode != planCaptureClipboardError || !strings.Contains(model.status, "no fenced spec-plan") {
 		t.Fatalf("invalid clipboard state = %+v", model)
 	}
@@ -315,10 +315,9 @@ func TestPlanCaptureClipboardErrorFallsBackToManualPaste(t *testing.T) {
 
 func TestPlanCaptureCLIWaitRefreshFindsPersistedValidatedPlan(t *testing.T) {
 	model := newPlanCaptureModel("")
-	model.cursor = 1
 	model.reloadPlan = func() (*state.StoredChangePlan, error) { return nil, nil }
-	model.Update(key(tea.KeyEnter, ""))
-	if model.mode != planCaptureCLIWait || !strings.Contains(ansi.Strip(model.View().Content), "spec plan submit --stdin") {
+	model.Update(key('r', "r"))
+	if model.mode != planCaptureChoice || !strings.Contains(ansi.Strip(model.View().Content), "spec plan submit --stdin") {
 		t.Fatalf("CLI wait state = %+v\n%s", model, ansi.Strip(model.View().Content))
 	}
 	plan, err := validateChangePlan([]byte(validPlanJSON))
@@ -485,7 +484,7 @@ func TestRootResponsiveNavigationRailOverlayAndMinimumSize(t *testing.T) {
 	wide.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
 	wideView := wide.View().Content
 	widePlain := ansi.Strip(wideView)
-	for _, expected := range []string{"CHANGE", "Intent & Scope", "REVIEW", "Summary", "Changes", "Integration", "Evidence", "Diff", "Explore", "History", "Home"} {
+	for _, expected := range []string{"CHANGE", "Define", "REVIEW", "Summary", "Changes", "Integration", "Evidence", "Diff", "Explore", "History", "Home"} {
 		if !strings.Contains(widePlain, expected) {
 			t.Fatalf("wide navigation missing %q:\n%s", expected, widePlain)
 		}
@@ -545,7 +544,7 @@ func TestChangeSummaryIsTheFirstReviewViewAndExplicitDecisionState(t *testing.T)
 	}
 	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	plain = ansi.Strip(model.View().Content)
-	assertTextOrder(t, plain, "Original intent", "Implementation plan", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
+	assertTextOrder(t, plain, "Original intent", "Implementation plan", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Original plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
 	if !sameRenderedLine(plain, "Complete Spec", "Request Changes") {
 		t.Fatalf("summary decisions are not presented together:\n%s", plain)
 	}
@@ -687,11 +686,11 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 	}{
 		{"definition", func() contractModel {
 			return newDefinitionModel(state.Setup{Title: "Disable automatic indexing", Outcome: "Preserve manual indexing"}, "clean")
-		}, []string{"Spec · New Change", "Define Change", "Intent", "Scope / expected behaviour", "Acceptance", "Create Spec"}},
+		}, []string{"Spec · New Change", "Define", "Intent", "Scope / expected behaviour", "Acceptance", "Create Spec"}},
 		{"overview", func() contractModel {
 			return newOverviewModel(overviewData{Title: "Disable automatic indexing", SpecID: "SPEC-014", Branch: "main", Baseline: reviewBaseline, Intent: "Disable automatic indexing", Scope: "Preserve manual indexing", StartedAt: time.Now().Add(-12 * time.Minute), Now: time.Now(), Facts: overviewFacts{BaselineReady: true}})
-		}, []string{"SPEC-014", "main", "Intent", "NEXT", "Change lifecycle", "Since baseline"}},
-		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"Implementation Plan", "Summary", "Planned changes", "Existing integration points", "enter inspect"}},
+		}, []string{"SPEC-014", "main", "Intent", "NEXT", "Change lifecycle", "Since starting state"}},
+		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"AI Plan", "Summary", "Planned changes", "Existing integration points", "enter inspect"}},
 		{"review-changes", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabChanges
@@ -706,7 +705,7 @@ func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabEvidence
 			return model
-		}, []string{"Review · Evidence", "TestAutoIndexCanBeDisabled", "baseline", "run tests"}},
+		}, []string{"Review · Evidence", "TestAutoIndexCanBeDisabled", "starting state", "run tests"}},
 		{"summary", func() contractModel {
 			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
 			model.tab = tabSummary

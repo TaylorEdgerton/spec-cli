@@ -25,8 +25,8 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	if _, err := state.Register(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(root, "change one", time.Now()); err == nil || !strings.Contains(err.Error(), "baseline") {
-		t.Fatalf("expected baseline error, got %v", err)
+	if _, err := New(root, "change one", time.Now()); err == nil || !strings.Contains(err.Error(), "starting state") {
+		t.Fatalf("expected starting state error, got %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "script.py"), []byte("print('one')\n"), 0o644); err != nil {
 		t.Fatal(err)

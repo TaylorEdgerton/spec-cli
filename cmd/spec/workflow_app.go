@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"time"
 
@@ -284,6 +285,7 @@ func (app *workflowApp) navigate(action string) tea.Cmd {
 	}
 	replaceWithOverview := false
 	if action == actionContinue {
+		app.reviewed = nil
 		if _, ok := app.active.(*contextReviewModel); ok && app.promptPending {
 			if err := deliverDefinitionPrompt(app.root, io.Discard, definitionServices{}); err != nil {
 				app.status = err.Error()
@@ -314,6 +316,9 @@ func (app *workflowApp) navigate(action string) tea.Cmd {
 				capture.nav = actionNone
 				return nil
 			}
+		}
+		if app.reviewed != nil {
+			app.reviewed.PlanStale = true
 		}
 	}
 	if action == actionComplete {
@@ -364,8 +369,9 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 			data.StatsRefreshed = true
 			data.RefreshedAt = app.reviewed.RefreshedAt
 			data.Facts.WorkspaceDirty = data.Stats.Files > 0
-			data.Facts.ReviewEntered = true
+			data.Facts.ReviewEntered = false
 		}
+		data.Facts.ReviewEntered = false
 		model = newOverviewModel(data)
 	case screenPlan:
 		workspace, err := state.Load(app.root)
@@ -376,12 +382,31 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 		if err != nil {
 			return err
 		}
-		model = newPlanModel(app.root, stored)
+		if stored == nil {
+			return app.load(shellScreen(actionPlanCapture), actionPlanCapture)
+		}
+		amend, err := workspace.PlanNeedsAmendment()
+		if err != nil {
+			return err
+		}
+		plan := newPlanModel(app.root, stored)
+		plan.received, plan.amend = true, amend
+		model = plan
 	case screenReview:
 		refreshed := true
 		var snapshot reviewSnapshot
-		if via == actionSummary && app.reviewed != nil {
+		if via != actionReview && app.reviewed != nil {
 			snapshot = *app.reviewed
+			workspace, err := state.Load(app.root)
+			if err != nil {
+				return err
+			}
+			current, err := workspace.Plan()
+			if err != nil {
+				return err
+			}
+			snapshot.PlanStale = !reflect.DeepEqual(current, snapshot.Plan)
+			app.reviewed = &snapshot
 			refreshed = false
 		} else {
 			loaded, err := loadReviewSnapshot(app.root)
@@ -450,6 +475,17 @@ func (app *workflowApp) load(target shellScreen, via string) error {
 			}
 		}
 		capture := newPlanCaptureModel(raw)
+		workspace, err := state.Load(app.root)
+		if err != nil {
+			return err
+		}
+		capture.amend, err = workspace.PlanNeedsAmendment()
+		if err != nil {
+			return err
+		}
+		if raw != "" {
+			capture.openManualPaste(raw, planEditLabel(capture.amend)+": Ctrl+Enter to preview; Escape for planning prompt options.")
+		}
 		capture.copyPlanPrompt = func() error { return copyPlanningPrompt(app.root) }
 		capture.reloadPlan = func() (*state.StoredChangePlan, error) {
 			workspace, err := state.Load(app.root)
@@ -599,7 +635,7 @@ func (app *workflowApp) navigationScreen() canonicalScreen {
 		if overview, err := loadOverview(app.root, time.Now()); err == nil {
 			facts := overview.Facts
 			if app.reviewed != nil {
-				facts.ReviewEntered = true
+				facts.ReviewEntered = app.screen == screenReview || app.screen == screenComplete
 			}
 			for _, stage := range deriveOverviewStages(facts) {
 				marker := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○", stageOmitted: "–"}[stage.Status]
@@ -607,12 +643,7 @@ func (app *workflowApp) navigationScreen() canonicalScreen {
 				switch stage.ID {
 				case "intent":
 					action = actionDefinition
-				case "plan":
-					if facts.PlanAvailable {
-						action = actionPlan
-					} else {
-						action = actionPlanCapture
-					}
+
 				case "review":
 					action = actionReview
 				case "evidence":
@@ -626,6 +657,10 @@ func (app *workflowApp) navigationScreen() canonicalScreen {
 	}
 	return canonicalScreen{Sections: []screenSection{
 		{ID: "navigation.change", Title: "CHANGE", Items: changeItems, EmptyReason: "No active change"},
+		{ID: "navigation.implement", Title: "IMPLEMENT", Items: []screenItem{
+			{ID: "navigation.plan", Label: "AI Plan", Selectable: true, Action: screenAction(actionPlan)},
+			{ID: "navigation.explore", Label: "Explore", Selectable: true, Action: screenAction(actionExplore)},
+		}},
 		{ID: "navigation.review", Title: "REVIEW", Items: []screenItem{
 			{ID: "navigation.summary", Label: "Summary", Selectable: true, Action: screenAction(actionSummary)},
 			{ID: "navigation.changes", Label: "Changes", Selectable: true, Action: screenAction(actionReviewChanges)},
@@ -634,7 +669,6 @@ func (app *workflowApp) navigationScreen() canonicalScreen {
 			{ID: "navigation.diff", Label: "Diff", Selectable: true, Action: screenAction(actionDiff)},
 		}},
 		{ID: "navigation.global", Items: []screenItem{
-			{ID: "navigation.explore", Label: "Explore", Selectable: true, Action: screenAction(actionExplore)},
 			{ID: "navigation.history", Label: "History", Selectable: true, Action: screenAction(actionHistory)},
 			{ID: "navigation.home", Label: "Home", Selectable: true, Action: screenAction(actionHome)},
 		}},
@@ -693,9 +727,6 @@ func (app *workflowApp) navigationRail(width, height int) string {
 		}
 		for _, item := range section.Items {
 			label := item.Label
-			if item.ID == "navigation.plan" {
-				label = strings.Replace(label, "Implementation Plan", "Plan", 1)
-			}
 			lines = append(lines, "  "+label)
 		}
 		lines = append(lines, "")

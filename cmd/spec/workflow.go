@@ -71,7 +71,7 @@ func runInit(output io.Writer) error {
 		fmt.Fprintf(output, "Installed default configuration in %s\n", configurationDirectory)
 	}
 	if !gitutil.HasBaseline(root) {
-		fmt.Fprintln(output, "Warning: this repository has no baseline commit.")
+		fmt.Fprintln(output, "Warning: this repository has no starting state commit.")
 		fmt.Fprintln(output, "Review the files and create an initial commit before you run `spec new`.")
 	}
 	return nil
