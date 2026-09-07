@@ -25,6 +25,8 @@ type planModel struct {
 	rawColumn             int
 	nav                   string
 	viewport              int
+	received              bool
+	amend                 bool
 }
 
 func newPlanModel(root string, stored *state.StoredChangePlan) *planModel {
@@ -32,8 +34,15 @@ func newPlanModel(root string, stored *state.StoredChangePlan) *planModel {
 }
 
 func (m *planModel) screen() canonicalScreen {
+	if m.received && m.stored != nil {
+		return canonicalScreen{Sections: []screenSection{{ID: "plan.received", Title: "AI Plan received", Items: []screenItem{
+			{ID: "plan.view", Label: "View plan", Selectable: true},
+			{ID: "plan.edit", Label: planEditLabel(m.amend), Selectable: true, Action: screenAction(actionPlanCapture)},
+			{ID: "plan.continue", Label: "Continue implementation", Selectable: true, Action: screenAction(actionContinue)},
+		}}}, Cursor: m.cursor}
+	}
 	if m.stored == nil {
-		return canonicalScreen{Sections: []screenSection{{ID: "plan", Title: "Implementation Plan", EmptyReason: "No implementation plan was submitted."}}}
+		return canonicalScreen{Sections: []screenSection{{ID: "plan", Title: "AI Plan", EmptyReason: "No plan captured."}}}
 	}
 	files := make([]screenItem, 0, len(m.stored.Plan.Files))
 	for index, file := range m.stored.Plan.Files {
@@ -85,6 +94,16 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			m.openSelected()
 		case "enter":
+			if m.received {
+				item, ok := m.screen().selectedItem()
+				if ok && item.ID == "plan.view" {
+					m.received, m.cursor = false, 0
+				} else if ok {
+					m.leave(string(item.Action))
+					return m, tea.Quit
+				}
+				return m, nil
+			}
 			if path, ok := m.selectedFile(); ok {
 				m.status = "Inspecting " + path + " in the preview."
 			} else {
@@ -108,6 +127,10 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.raw, m.viewport, m.rawColumn = false, 0, 0
 				return m, nil
 			}
+			if !m.received {
+				m.received, m.cursor, m.viewport = true, 0, 0
+				return m, nil
+			}
 			m.leave(actionBack)
 			return m, tea.Quit
 		case "ctrl+c":
@@ -121,10 +144,20 @@ func (m *planModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *planModel) leave(action string) { m.done, m.nav = true, action }
 
 func (m *planModel) hints() [][2]string {
+	if m.received {
+		return [][2]string{{"↑/↓", "select"}, {"enter", "open"}, {"e", strings.ToLower(planEditLabel(m.amend))}, {"b", "back"}, {"g", "home"}}
+	}
 	if m.raw {
 		return [][2]string{{"↑/↓", "rows"}, {"←/→", "columns"}, {"x", "readable plan"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
 	}
-	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"x", "inspect raw"}, {"e", "edit plan"}, {"c", "continue"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
+	return [][2]string{{"↑/↓", "select"}, {"enter", "inspect"}, {"x", "inspect raw"}, {"e", strings.ToLower(planEditLabel(m.amend))}, {"c", "continue"}, {"b", "back"}, {"g", "home"}, {"?", "help"}}
+}
+
+func planEditLabel(amend bool) string {
+	if amend {
+		return "Amend plan"
+	}
+	return "Edit plan"
 }
 
 func (m *planModel) rawColumnStep() int { return max(8, max(20, m.width-8)/3) }
@@ -169,12 +202,28 @@ func (m *planModel) View() tea.View {
 	if h <= 0 {
 		h = 32
 	}
+	if m.received && m.stored != nil {
+		lines := []string{fmt.Sprintf("%d planned files", len(m.stored.Plan.Files)), fmt.Sprintf("%d integration points", len(m.stored.Plan.IntegrationPoints)), ""}
+		var labels []string
+		for _, item := range m.screen().selectableItems() {
+			labels = append(labels, item.Label)
+		}
+		lines = append(lines, selectablePlanRows(labels, m.cursor)...)
+		if m.stored.AfterChanges && m.stored.Original == nil {
+			lines = append(lines, "", "First plan received after repository changes.")
+		}
+		if len(m.stored.Amendments) > 0 {
+			lines = append(lines, "", "Original plan preserved; current plan includes amendments.")
+		}
+		lines = append(lines, "", m.status)
+		return tea.NewView(uiAppShell(w, h, "AI Plan received", strings.Join(lines, "\n"), uiKeyHints(m.hints(), "  ")))
+	}
 	if m.help {
-		return tea.NewView(uiAppShell(w, h, "Implementation Plan", uiHelpOverlayWidth(m.hints(), max(20, w-8)), uiKeyHints(m.hints(), "  ")))
+		return tea.NewView(uiAppShell(w, h, "AI Plan", uiHelpOverlayWidth(m.hints(), max(20, w-8)), uiKeyHints(m.hints(), "  ")))
 	}
 	if m.stored == nil {
-		body := uiEmptyState("No implementation plan", "No implementation plan was submitted. The plan is optional; actual-change review remains available.")
-		return tea.NewView(uiAppShell(w, h, "Implementation Plan", body, uiKeyHints(m.hints(), "  ")))
+		body := uiEmptyState("No plan captured", "No plan captured. The plan is optional; actual-change review remains available.")
+		return tea.NewView(uiAppShell(w, h, "AI Plan", body, uiKeyHints(m.hints(), "  ")))
 	}
 	p := m.stored.Plan
 	if m.raw {
@@ -196,8 +245,8 @@ func (m *planModel) View() tea.View {
 			columns := fmt.Sprintf("columns %d–%d of %d", m.rawColumn+1, min(maxWidth, m.rawColumn+width), maxWidth)
 			body = uiSplit("Raw ChangePlan", columns, width) + "\n\n" + strings.Join(jsonLines, "\n")
 		}
-		body, m.viewport = uiViewportBody(body, uiWorkflowBodyHeight(h, "Implementation Plan · Raw"), m.viewport, "")
-		return tea.NewView(uiAppShell(w, h, "Implementation Plan · Raw", body, uiKeyHints(m.hints(), "  ")))
+		body, m.viewport = uiViewportBody(body, uiWorkflowBodyHeight(h, "AI Plan · Raw"), m.viewport, "")
+		return tea.NewView(uiAppShell(w, h, "AI Plan · Raw", body, uiKeyHints(m.hints(), "  ")))
 	}
 	screen := m.screen()
 	proseWidth := max(20, w-8)
@@ -246,7 +295,7 @@ func (m *planModel) View() tea.View {
 	if m.status != "" {
 		lines = append(lines, "", uiMutedStyle.Render(m.status))
 	}
-	header := fmt.Sprintf("Implementation Plan  AGENT PLAN\nSubmitted %s · %s · %s", m.stored.SubmittedAt.Format("15:04"), emptyAs(m.stored.Submitter, "unknown submitter"), m.stored.Source)
+	header := fmt.Sprintf("AI Plan  AGENT PLAN\nSubmitted %s · %s · %s", m.stored.SubmittedAt.Format("15:04"), emptyAs(m.stored.Submitter, "unknown submitter"), m.stored.Source)
 	body := strings.Join(lines, "\n")
 	anchor := ""
 	if item, ok := m.screen().selectedItem(); ok {

@@ -39,7 +39,7 @@ func TestPlanSubmitStdinValidatesActiveSpecAndPersistsVersionedEnvelope(t *testi
 	if err != nil || stored == nil || stored.SchemaVersion != state.ArtifactSchemaVersion || stored.Source != state.PlanSourceCLI || stored.Plan.Files[0].Path != "config/config.go" {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
-	if !strings.Contains(output.String(), "v1") {
+	if !strings.Contains(output.String(), "AI Plan received") {
 		t.Fatalf("output=%q", output.String())
 	}
 }

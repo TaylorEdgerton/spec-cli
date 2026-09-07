@@ -18,7 +18,7 @@ import (
 
 func TestPlanScreenExplainsAbsence(t *testing.T) {
 	model := newPlanModel("", nil)
-	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, "No implementation plan") || !strings.Contains(plain, "optional") {
+	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, "No plan captured") || !strings.Contains(plain, "optional") {
 		t.Fatalf("absent plan = %q", plain)
 	}
 }
@@ -116,7 +116,7 @@ func TestPlanScreenRendersAllSectionsAndSelectionIsReadOnly(t *testing.T) {
 	model := newPlanModel(root, stored)
 	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
 	plain := ansi.Strip(model.View().Content)
-	for _, expected := range []string{"Implementation Plan", "AGENT PLAN", "Codex", "Disable automatic indexing", "config/config.go", "add setting", "ensureIndex", "controls flow", "manual indexing remains available", "CLI flag location", "paste", "Preview", "package config"} {
+	for _, expected := range []string{"AI Plan", "AGENT PLAN", "Codex", "Disable automatic indexing", "config/config.go", "add setting", "ensureIndex", "controls flow", "manual indexing remains available", "CLI flag location", "paste", "Preview", "package config"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("plan missing %q:\n%s", expected, plain)
 		}
