@@ -74,6 +74,9 @@ func BuildKind(root string, includeFiles bool, kind Kind) (string, Info, error) 
 	}
 	current := string(currentData)
 	var builder strings.Builder
+	if kind == Plan {
+		builder.WriteString("Investigate and plan only. Do not implement or modify repository files.\n\n")
+	}
 	builder.WriteString("Read and follow `.spec.md`.\n\n")
 	builder.WriteString("Use the current Git workspace and stay within the defined scope.\n")
 	builder.WriteString("Run or report verification only through the configured verification workflow.\n")
@@ -106,6 +109,20 @@ func BuildKind(root string, includeFiles bool, kind Kind) (string, Info, error) 
 	builder.WriteString("Discovery context below is advisory and may be absent.\n\n")
 	if kind == Plan {
 		writePlanInstructions(&builder)
+		fmt.Fprintf(&builder, "\nStarting state: commit %s. Existing work may predate this Spec.\n", workspace.BaseSHA)
+		stored, err := workspace.Plan()
+		if err != nil {
+			return "", Info{}, err
+		}
+		if stored != nil {
+			current, err := json.MarshalIndent(stored.Plan, "", "  ")
+			if err != nil {
+				return "", Info{}, err
+			}
+			builder.WriteString("\n## Current AI plan\n\nPropose a complete replacement, including unchanged items. Explain the correction or scope change in the summary. Spec saves an edit before repository changes, or an amendment preserving the original after changes.\n\n```json\n")
+			builder.Write(current)
+			builder.WriteString("\n```\n")
+		}
 	} else if err := writeImplementationInstructions(&builder, workspace); err != nil {
 		return "", Info{}, err
 	}
@@ -262,14 +279,18 @@ func writePlanInstructions(builder *strings.Builder) {
 	builder.WriteString("## Planning task\n\n")
 	builder.WriteString("Your task is to investigate the repository and propose the smallest implementation plan that satisfies the change contract. Do not implement the change or modify repository files.\n")
 	builder.WriteString("Allowed file actions are `create`, `modify`, and `delete`. Use repository-relative paths and identify existing integration relationships and verification behaviours.\n\n")
+	builder.WriteString("## ChangePlan format\n\nSubmit one complete JSON object, not a partial patch. `summary` is a required non-empty string. Optional arrays: `files` (path, action, optional reason); `integration_points` (existing_symbol, planned_change, relationship); `verification` (behaviour, optional likely_location); `uncertainties` (strings). Use only these fields. Empty arrays are allowed. Paths must stay inside the repository; absolute paths and .. escapes are rejected. Paths are cleaned and backslashes normalized to slashes; duplicate normalized paths are rejected. Text is trimmed. Describe verification behaviours and reuse existing project components and styling.\n\n")
+	builder.WriteString("Choose exactly one return route. Run the command in this Spec's repository; do not edit Spec's storage files directly.\n\n")
 	builder.WriteString("If you can run terminal commands, submit the plan directly with this safe stdin form:\n\n")
 	builder.WriteString("spec plan submit --stdin <<'SPEC_PLAN'\n")
 	builder.WriteString(changePlanExample)
 	builder.WriteString("\nSPEC_PLAN\n\n")
+	builder.WriteString("After successful submission, report success briefly to the human; do not also emit a spec-plan block. If submission fails, correct the reported validation error and retry. Never claim success after a failed command.\n\n")
 	builder.WriteString("If you cannot run that command, return exactly one fenced `spec-plan` JSON block and no second plan block:\n\n")
 	builder.WriteString("```spec-plan\n")
 	builder.WriteString(changePlanExample)
 	builder.WriteString("\n```\n\n")
+	builder.WriteString("The opening fence must be three backticks followed immediately by spec-plan; put JSON on the next line and close with three backticks on their own line. The human copies your complete response, returns to Implement → AI Plan, and selects Paste AI plan. They paste your response, not this planning prompt.\n\n")
 	builder.WriteString("Stop after the plan is submitted or returned. Wait for human approval before implementation.\n")
 }
 

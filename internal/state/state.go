@@ -40,19 +40,20 @@ type Setup struct {
 }
 
 type Metadata struct {
-	Root           string          `json:"root"`
-	ID             string          `json:"id"`
-	SpecID         string          `json:"spec_id,omitempty"`
-	NextSpecNumber int             `json:"next_spec_number,omitempty"`
-	Active         bool            `json:"active"`
-	Title          string          `json:"title,omitempty"`
-	StartedAt      time.Time       `json:"started_at,omitempty"`
-	BaseSHA        string          `json:"base_sha,omitempty"`
-	GitState       string          `json:"git_state,omitempty"`
-	OriginSpecID   string          `json:"origin_spec_id,omitempty"`
-	Setup          *Setup          `json:"setup,omitempty"`
-	VerifyCommands []string        `json:"verify_commands,omitempty"`
-	SandboxSession *SandboxSession `json:"sandbox_session,omitempty"`
+	Root                string          `json:"root"`
+	ID                  string          `json:"id"`
+	SpecID              string          `json:"spec_id,omitempty"`
+	NextSpecNumber      int             `json:"next_spec_number,omitempty"`
+	Active              bool            `json:"active"`
+	Title               string          `json:"title,omitempty"`
+	StartedAt           time.Time       `json:"started_at,omitempty"`
+	BaseSHA             string          `json:"base_sha,omitempty"`
+	GitState            string          `json:"git_state,omitempty"`
+	StartingFingerprint string          `json:"starting_fingerprint,omitempty"`
+	OriginSpecID        string          `json:"origin_spec_id,omitempty"`
+	Setup               *Setup          `json:"setup,omitempty"`
+	VerifyCommands      []string        `json:"verify_commands,omitempty"`
+	SandboxSession      *SandboxSession `json:"sandbox_session,omitempty"`
 }
 
 type Verification struct {
@@ -74,6 +75,7 @@ type History struct {
 	Scope                  string            `json:"scope,omitempty"`
 	StartedAt              time.Time         `json:"started_at"`
 	BaseSHA                string            `json:"base_sha"`
+	StartingFingerprint    string            `json:"starting_fingerprint,omitempty"`
 	FinishedAt             time.Time         `json:"finished_at"`
 	EndSHA                 string            `json:"end_sha,omitempty"`
 	ChangedFiles           []string          `json:"changed_files,omitempty"`
@@ -339,6 +341,7 @@ func (workspace *Workspace) Start(title, baseSHA string, now time.Time, gitState
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
 	workspace.GitState = firstString(gitState)
+	workspace.StartingFingerprint = ""
 	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
@@ -361,6 +364,7 @@ func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setu
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
 	workspace.GitState = firstString(gitState)
+	workspace.StartingFingerprint = ""
 	workspace.OriginSpecID = strings.TrimSpace(setup.OriginSpecID)
 	workspace.Setup = &copy
 	workspace.SandboxSession = nil
@@ -431,6 +435,7 @@ func (workspace *Workspace) Abandon() error {
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
 	workspace.GitState = ""
+	workspace.StartingFingerprint = ""
 	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
@@ -526,6 +531,7 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	if record.BaseSHA == "" {
 		record.BaseSHA = workspace.BaseSHA
 	}
+	record.StartingFingerprint = workspace.StartingFingerprint
 	if record.Plan == nil {
 		record.Plan = plan
 	}
@@ -568,6 +574,7 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
 	workspace.GitState = ""
+	workspace.StartingFingerprint = ""
 	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil

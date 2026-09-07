@@ -55,12 +55,15 @@ type ChangePlan struct {
 }
 
 type StoredChangePlan struct {
-	SchemaVersion int        `json:"schema_version"`
-	Source        PlanSource `json:"source"`
-	Submitter     string     `json:"submitter,omitempty"`
-	SubmittedAt   time.Time  `json:"submitted_at"`
-	AcceptedAt    time.Time  `json:"accepted_at"`
-	Plan          ChangePlan `json:"plan"`
+	SchemaVersion int              `json:"schema_version"`
+	Source        PlanSource       `json:"source"`
+	Submitter     string           `json:"submitter,omitempty"`
+	SubmittedAt   time.Time        `json:"submitted_at"`
+	AcceptedAt    time.Time        `json:"accepted_at"`
+	Plan          ChangePlan       `json:"plan"`
+	Original      *PlanSubmission  `json:"original,omitempty"`
+	Amendments    []PlanSubmission `json:"amendments,omitempty"`
+	AfterChanges  bool             `json:"after_changes,omitempty"`
 }
 
 type TimelineDetails struct {
@@ -81,6 +84,7 @@ const (
 	TimelinePromptCopied       TimelineEventType = "prompt_copied"
 	TimelinePromptPrinted      TimelineEventType = "prompt_printed"
 	TimelinePlanAccepted       TimelineEventType = "plan_accepted"
+	TimelinePlanAmended        TimelineEventType = "plan_amended"
 	TimelineActualRefreshed    TimelineEventType = "actual_state_refreshed"
 	TimelineEvidenceRecorded   TimelineEventType = "evidence_recorded"
 	TimelineReviewDecision     TimelineEventType = "review_decision"
@@ -192,7 +196,10 @@ func (workspace Workspace) SavePlan(plan StoredChangePlan) error {
 		return err
 	}
 	if existing != nil {
-		if reflect.DeepEqual(*existing, plan) {
+		if reflect.DeepEqual(existing.Submission(), plan.Submission()) && existing.AcceptedAt.Equal(plan.AcceptedAt) {
+			if len(existing.Amendments) > 0 {
+				event.Type = TimelinePlanAmended
+			}
 			return workspace.AppendTimeline(event)
 		}
 		existingStamp := existing.AcceptedAt
@@ -201,6 +208,17 @@ func (workspace Workspace) SavePlan(plan StoredChangePlan) error {
 		}
 		if existingStamp.Equal(stamp) {
 			return fmt.Errorf("save ChangePlan: duplicate acceptance %s has different content", stamp.Format(time.RFC3339Nano))
+		}
+		original := existing.Submission()
+		if existing.Original != nil {
+			original = *existing.Original
+		}
+		plan.Original = &original
+		plan.Amendments = append([]PlanSubmission(nil), existing.Amendments...)
+		if plan.AfterChanges || existing.AfterChanges || len(existing.Amendments) > 0 {
+			plan.AfterChanges = true
+			plan.Amendments = append(plan.Amendments, plan.Submission())
+			event.Type = TimelinePlanAmended
 		}
 	}
 	if err := writeJSON(filepath.Join(workspace.Dir, planFilename), plan); err != nil {
