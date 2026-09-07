@@ -187,6 +187,16 @@ func ChangedFiles(root, base string) ([]string, error) {
 }
 
 func WorktreeFingerprint(root string) (string, error) {
+	return worktreeFingerprint(root, false)
+}
+
+// StartingFingerprint ignores the active Spec document, whose editing is part
+// of defining the change rather than implementing it.
+func StartingFingerprint(root string) (string, error) {
+	return worktreeFingerprint(root, true)
+}
+
+func worktreeFingerprint(root string, excludeSpec bool) (string, error) {
 	hash := sha256.New()
 	writePart := func(value string) {
 		fmt.Fprintf(hash, "%d:", len(value))
@@ -197,7 +207,11 @@ func WorktreeFingerprint(root string) (string, error) {
 		return "", err
 	}
 	writePart(head)
-	diff, err := outputRaw(root, "diff", "--no-ext-diff", "--binary", "HEAD", "--")
+	args := []string{"diff", "--no-ext-diff", "--binary", "HEAD", "--"}
+	if excludeSpec {
+		args = append(args, ".", ":(top,exclude).spec.md")
+	}
+	diff, err := outputRaw(root, args...)
 	if err != nil {
 		return "", err
 	}
@@ -207,7 +221,7 @@ func WorktreeFingerprint(root string) (string, error) {
 		return "", err
 	}
 	for _, relative := range strings.Split(untracked, "\x00") {
-		if relative == "" {
+		if relative == "" || (excludeSpec && relative == ActiveSpecPattern) {
 			continue
 		}
 		writePart(relative)
