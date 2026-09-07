@@ -62,29 +62,24 @@ type overviewModel struct {
 const overviewLargeDriftFiles = 12
 
 func deriveOverviewStages(f overviewFacts) []overviewStage {
-	s := []overviewStage{{"intent", "Intent & Scope", stageComplete}, {"baseline", "Baseline", stageComplete}, {"plan", "Implementation Plan", stageOmitted}, {"implementation", "Implementation", stagePending}, {"review", "Review", stagePending}, {"evidence", "Evidence", stagePending}, {"complete", "Complete", stagePending}}
-	current := "implementation"
+	s := []overviewStage{{"intent", "Define", stagePending}, {"implementation", "Implement", stagePending}, {"review", "Review", stagePending}, {"complete", "Complete", stagePending}}
+	current := 1
 	if f.SetupActive {
-		current = "intent"
-		s[0].Status = stageCurrent
-		s[1].Status = stagePending
+		current = 0
 	} else if f.Completed {
-		current = "complete"
-	} else if f.EvidenceCount > 0 {
-		current = "evidence"
+		current = 3
 	} else if f.ReviewEntered {
-		current = "review"
+		current = 2
 	}
-	if f.PlanAvailable {
-		s[2].Status = stageComplete
-	}
-	order := map[string]int{"intent": 0, "baseline": 1, "plan": 2, "implementation": 3, "review": 4, "evidence": 5, "complete": 6}
 	for i := range s {
-		if s[i].ID == current {
+		if i == current {
 			s[i].Status = stageCurrent
-		} else if s[i].Status != stageOmitted && s[i].Status != stageComplete && i < order[current] {
+		} else if i < current {
 			s[i].Status = stageComplete
 		}
+	}
+	if f.Completed {
+		s[3].Status = stageComplete
 	}
 	return s
 }
@@ -96,9 +91,9 @@ func (m *overviewModel) screen() canonicalScreen {
 	next := m.next()
 	sections := []screenSection{{ID: "overview.next", Title: "NEXT", Items: next.Items}}
 	if m.largeBaselineDrift() {
-		sections = append(sections, screenSection{ID: "overview.drift", Title: "Baseline drift", Items: []screenItem{
+		sections = append(sections, screenSection{ID: "overview.drift", Title: "Starting state drift", Items: []screenItem{
 			{ID: "overview.drift.review", Label: "Review anyway", Selectable: true, Action: screenAction(actionReview)},
-			{ID: "overview.drift.details", Label: "View baseline details", Selectable: true, Action: screenAction(actionBaseline)},
+			{ID: "overview.drift.details", Label: "View starting state details", Selectable: true, Action: screenAction(actionBaseline)},
 		}})
 	}
 	return canonicalScreen{Sections: sections, Cursor: m.cursor}
@@ -107,14 +102,14 @@ func (m *overviewModel) screen() canonicalScreen {
 func (m *overviewModel) next() overviewNext {
 	switch {
 	case m.data.Facts.SetupActive:
-		return overviewNext{Title: "Define change", Message: "Finish the intent and expected behaviour before implementation starts.", Items: []screenItem{
+		return overviewNext{Title: "Define", Message: "Finish the intent and expected behaviour before implementation starts.", Items: []screenItem{
 			{ID: "overview.next.definition", Label: "Continue defining change", Selectable: true, Action: screenAction(actionDefinition)},
 		}}
 	case m.data.Facts.Completed:
 		return overviewNext{Title: "Complete", Message: "This Spec is complete. Its retained change record is available in History.", Items: []screenItem{
 			{ID: "overview.next.history", Label: "Open completed Spec history", Selectable: true, Action: screenAction(actionHistory)},
 		}}
-	case m.data.Facts.EvidenceCount > 0 || m.data.Facts.ReviewEntered:
+	case m.data.Facts.ReviewEntered:
 		message := "Open Review to refresh current workspace changes before deciding whether the available evidence is convincing."
 		if m.data.StatsRefreshed {
 			message = "Review the explicitly refreshed changes and decide whether the available evidence is convincing."
@@ -123,16 +118,19 @@ func (m *overviewModel) next() overviewNext {
 			{ID: "overview.next.review", Label: "Review current workspace changes", Selectable: true, Action: screenAction(actionReview)},
 			{ID: "overview.next.evidence", Label: "Review tests and evidence", Selectable: true, Action: screenAction(actionEvidence)},
 			{ID: "overview.next.summary", Label: "Review change summary", Selectable: true, Action: screenAction(actionSummary)},
+			{ID: "overview.next.plan", Label: "AI Plan (optional)", Selectable: true, Action: screenAction(actionPlan)},
+			{ID: "overview.next.implement", Label: "Continue implementation", Selectable: true, Action: screenAction(actionContinue)},
 		}}
 	default:
-		plan := screenItem{ID: "overview.next.plan.capture", Label: "Capture AI plan (optional)", Selectable: true, Action: screenAction(actionPlanCapture)}
+		plan := screenItem{ID: "overview.next.plan.capture", Label: "AI Plan (optional)", Selectable: true, Action: screenAction(actionPlanCapture)}
 		if m.data.Facts.PlanAvailable {
-			plan = screenItem{ID: "overview.next.plan.view", Label: "View accepted AI plan", Selectable: true, Action: screenAction(actionPlan)}
+			plan = screenItem{ID: "overview.next.plan.view", Label: "AI Plan", Selectable: true, Action: screenAction(actionPlan)}
 		}
-		return overviewNext{Title: "Implementation", Message: "Prompt is ready. Implement the change with your preferred AI.", Items: []screenItem{
+		return overviewNext{Title: "Implement", Message: "Prompt is ready. Implement the change with your preferred AI.", Items: []screenItem{
 			{ID: "overview.next.prompt", Label: "Copy implementation prompt", Selectable: true, Action: screenAction(actionPrompt)},
 			plan,
 			{ID: "overview.next.review", Label: "Review current workspace changes", Selectable: true, Action: screenAction(actionReview)},
+			{ID: "overview.next.explore", Label: "Explore relevant code (optional)", Selectable: true, Action: screenAction(actionExplore)},
 		}}
 	}
 }
@@ -202,7 +200,7 @@ func (m *overviewModel) openSelectedAction() tea.Cmd {
 		return nil
 	case actionBaseline:
 		m.showBaselineDetails = true
-		m.status = "Showing the baseline and refresh provenance used by this Overview."
+		m.status = "Showing the starting state and refresh provenance used by this Overview."
 		return nil
 	}
 	if action == "" {
@@ -243,7 +241,7 @@ func (m *overviewModel) View() tea.View {
 		base = base[:7]
 	}
 	lines := m.bodyLines(max(20, w-8), h < 30)
-	header := fmt.Sprintf("%s · %s  OPEN\n%s · baseline %s · %s", m.data.SpecID, m.data.Title, m.data.Branch, base, homeElapsed(m.data.StartedAt, m.data.Now))
+	header := fmt.Sprintf("%s · %s  OPEN\n%s · starting state %s · %s", m.data.SpecID, m.data.Title, m.data.Branch, base, homeElapsed(m.data.StartedAt, m.data.Now))
 	body := strings.Join(lines, "\n")
 	if m.help {
 		body = uiHelpOverlayWidth(m.hints(), max(20, w-8))
@@ -298,19 +296,19 @@ func (m *overviewModel) bodyLines(width int, compact bool) []string {
 		lines = append(lines, uiTitleStyle.Render("Change lifecycle"))
 		lines = append(lines, m.lifecycleLines()...)
 	}
-	lines = append(lines, uiTitleStyle.Render("Since baseline"))
+	lines = append(lines, uiTitleStyle.Render("Since starting state"))
 	base := shortSHA(m.data.Baseline)
 	if m.largeBaselineDrift() {
-		lines = append(lines, uiLineStyle.Render(fmt.Sprintf("! %d files have changed since baseline %s.", m.data.Stats.Files, base)), "  This change may contain unrelated work.", m.driftActionLine(selected))
+		lines = append(lines, uiLineStyle.Render(fmt.Sprintf("! %d files have changed since starting state %s.", m.data.Stats.Files, base)), "  This change may contain unrelated work.", m.driftActionLine(selected))
 	} else if !m.data.StatsRefreshed {
-		lines = append(lines, "  Not refreshed in this session.", "  Open Review to refresh actual Git state since baseline "+base+".")
+		lines = append(lines, "  Not refreshed in this session.", "  Open Review to refresh actual Git state since starting state "+base+".")
 	} else {
 		lines = append(lines,
 			fmt.Sprintf("  Files %d   Lines +%d -%d   Tests changed %d", m.data.Stats.Files, m.data.Stats.Additions, m.data.Stats.Deletions, m.data.Stats.TestsAdded),
 			"  Cached from explicit refresh "+m.data.RefreshedAt.UTC().Format("15:04 UTC"))
 	}
 	if m.showBaselineDetails {
-		lines = append(lines, uiTitleStyle.Render("Baseline details"), "  Commit   "+emptyDash(m.data.Baseline), "  Started  "+homeElapsed(m.data.StartedAt, m.data.Now))
+		lines = append(lines, uiTitleStyle.Render("Starting state details"), "  Commit   "+emptyDash(m.data.Baseline), "  Started  "+homeElapsed(m.data.StartedAt, m.data.Now))
 		if m.data.StatsRefreshed {
 			lines = append(lines, "  Facts    cached from explicit Review refresh at "+m.data.RefreshedAt.UTC().Format(time.RFC3339))
 		}
@@ -341,27 +339,12 @@ func (m *overviewModel) lifecycleLines() []string {
 }
 
 func (m *overviewModel) compactLifecycleLines() []string {
-	stageText := func(id, label string) string {
-		for _, stage := range m.stages {
-			if stage.ID == id {
-				mark := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○", stageOmitted: "–"}[stage.Status]
-				detail := ""
-				if stage.Status == stageCurrent {
-					detail = " CURRENT"
-				}
-				return mark + " " + label + detail
-			}
-		}
-		return "○ " + label
+	var stages []string
+	for _, stage := range m.stages {
+		mark := map[stageStatus]string{stageComplete: "✓", stageCurrent: "●", stagePending: "○"}[stage.Status]
+		stages = append(stages, mark+" "+stage.Label)
 	}
-	planDetail := "optional"
-	if m.data.Facts.PlanAvailable {
-		planDetail = "accepted"
-	}
-	return []string{
-		fmt.Sprintf("  %s   %s %s   %s %s", stageText("intent", "Intent & Scope"), stageText("baseline", "Baseline"), shortSHA(m.data.Baseline), stageText("plan", "Implementation Plan"), planDetail),
-		fmt.Sprintf("  %s   %s   %s   %s", stageText("implementation", "Implementation"), stageText("review", "Review"), stageText("evidence", "Evidence"), stageText("complete", "Complete")),
-	}
+	return []string{"  " + strings.Join(stages, "   ")}
 }
 
 func (m *overviewModel) driftActionLine(selected screenItem) string {

@@ -28,7 +28,7 @@ func TestOverviewRendersOrderedOrientationWithoutPercentageProgress(t *testing.T
 		model.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
 		view := model.View().Content
 		plain := ansi.Strip(view)
-		assertTextOrder(t, plain, "Intent", "Add an option", "Expected behaviour", "Preserve manual", "NEXT", "Change lifecycle", "Since baseline")
+		assertTextOrder(t, plain, "Intent", "Add an option", "Expected behaviour", "Preserve manual", "NEXT", "Change lifecycle", "Since starting state")
 		for _, forbidden := range []string{"Progress", "%", "█", "░"} {
 			if strings.Contains(plain, forbidden) {
 				t.Fatalf("overview retained %q at %dx%d:\n%s", forbidden, size.width, size.height, plain)
@@ -77,10 +77,10 @@ func TestOverviewNextActionsDeriveFromDurableFacts(t *testing.T) {
 		ids   []string
 	}{
 		{"definition", overviewFacts{SetupActive: true}, []string{"overview.next.definition"}},
-		{"implementation", overviewFacts{BaselineReady: true}, []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review"}},
-		{"planned", overviewFacts{BaselineReady: true, PlanAvailable: true}, []string{"overview.next.prompt", "overview.next.plan.view", "overview.next.review"}},
-		{"review", overviewFacts{BaselineReady: true, ReviewEntered: true}, []string{"overview.next.review", "overview.next.evidence", "overview.next.summary"}},
-		{"evidence", overviewFacts{BaselineReady: true, ReviewEntered: true, EvidenceCount: 1}, []string{"overview.next.review", "overview.next.evidence", "overview.next.summary"}},
+		{"implementation", overviewFacts{BaselineReady: true}, []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review", "overview.next.explore"}},
+		{"planned", overviewFacts{BaselineReady: true, PlanAvailable: true}, []string{"overview.next.prompt", "overview.next.plan.view", "overview.next.review", "overview.next.explore"}},
+		{"review", overviewFacts{BaselineReady: true, ReviewEntered: true}, []string{"overview.next.review", "overview.next.evidence", "overview.next.summary", "overview.next.plan", "overview.next.implement"}},
+		{"evidence", overviewFacts{BaselineReady: true, ReviewEntered: true, EvidenceCount: 1}, []string{"overview.next.review", "overview.next.evidence", "overview.next.summary", "overview.next.plan", "overview.next.implement"}},
 		{"complete", overviewFacts{Completed: true}, []string{"overview.next.history"}},
 	}
 	for _, test := range tests {
@@ -122,7 +122,7 @@ func TestOverviewNextActivationCopiesOrRoutesExplicitly(t *testing.T) {
 func TestOverviewLifecycleMarkersAreStateNotSelection(t *testing.T) {
 	model := newOverviewModel(overviewData{Baseline: "a1b2c3d4", Facts: overviewFacts{BaselineReady: true}})
 	plain := ansi.Strip(model.View().Content)
-	for _, expected := range []string{"✓ Intent & Scope", "✓ Baseline", "– Implementation Plan", "● Implementation", "CURRENT", "○ Review", "○ Evidence", "○ Complete"} {
+	for _, expected := range []string{"✓ Define", "● Implement", "CURRENT", "○ Review", "○ Complete"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("lifecycle missing %q:\n%s", expected, plain)
 		}
@@ -143,24 +143,24 @@ func TestOverviewLargeBaselineDriftBoundaryAndActions(t *testing.T) {
 	base.Stats.Files++
 	model := newOverviewModel(base)
 	plain := ansi.Strip(model.View().Content)
-	for _, expected := range []string{"changed since baseline c83e894", "may contain unrelated work", "Review anyway", "View baseline details"} {
+	for _, expected := range []string{"changed since starting state c83e894", "may contain unrelated work", "Review anyway", "View starting state details"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("drift warning missing %q:\n%s", expected, plain)
 		}
 	}
-	if got, want := model.screen().selectableItemIDs(), []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review", "overview.drift.review", "overview.drift.details"}; !reflect.DeepEqual(got, want) {
+	if got, want := model.screen().selectableItemIDs(), []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review", "overview.next.explore", "overview.drift.review", "overview.drift.details"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("drift actions = %v, want %v", got, want)
 	}
-	model.cursor = 3
+	model.cursor = 4
 	model.Update(key(tea.KeyEnter, ""))
 	if model.nav != actionReview {
 		t.Fatalf("Review anyway action = %q", model.nav)
 	}
 	model.nav = actionNone
-	model.cursor = 4
+	model.cursor = 5
 	model.Update(key(tea.KeyEnter, ""))
 	if !model.showBaselineDetails || model.nav != actionNone {
-		t.Fatalf("baseline detail action = details:%v nav:%q", model.showBaselineDetails, model.nav)
+		t.Fatalf("starting state detail action = details:%v nav:%q", model.showBaselineDetails, model.nav)
 	}
 }
 
@@ -201,8 +201,8 @@ func TestOverviewStageDerivationHasExactlyOneCurrentStage(t *testing.T) {
 		{"plan", overviewFacts{BaselineReady: true, PlanAvailable: true}, "implementation"},
 		{"workspace", overviewFacts{BaselineReady: true, WorkspaceDirty: true}, "implementation"},
 		{"review", overviewFacts{BaselineReady: true, WorkspaceDirty: true, ReviewEntered: true}, "review"},
-		{"evidence", overviewFacts{BaselineReady: true, WorkspaceDirty: true, ReviewEntered: true, EvidenceCount: 1}, "evidence"},
-		{"complete", overviewFacts{Completed: true}, "complete"},
+		{"evidence", overviewFacts{BaselineReady: true, WorkspaceDirty: true, ReviewEntered: true, EvidenceCount: 1}, "review"},
+		{"complete", overviewFacts{Completed: true}, ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -214,7 +214,11 @@ func TestOverviewStageDerivationHasExactlyOneCurrentStage(t *testing.T) {
 					current, count = stage.ID, count+1
 				}
 			}
-			if count != 1 || current != test.want {
+			wantCount := 1
+			if test.facts.Completed {
+				wantCount = 0
+			}
+			if count != wantCount || current != test.want {
 				t.Fatalf("stages = %+v, want current %q", stages, test.want)
 			}
 			if !test.facts.PlanAvailable {
