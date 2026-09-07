@@ -40,7 +40,8 @@ func validateChangePlan(data []byte) (state.ChangePlan, error) {
 	if err := decoder.Decode(&p); err != nil {
 		return p, fmt.Errorf("parse ChangePlan: %w", err)
 	}
-	if decoder.More() {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return p, fmt.Errorf("parse ChangePlan: trailing JSON")
 	}
 	p.Summary = strings.TrimSpace(p.Summary)
@@ -110,11 +111,15 @@ func saveAcceptedPlan(root string, plan state.ChangePlan, source state.PlanSourc
 	if !workspace.Active {
 		return nil, fmt.Errorf("no active Spec")
 	}
-	stored := state.StoredChangePlan{SchemaVersion: state.ArtifactSchemaVersion, Source: source, Submitter: strings.TrimSpace(submitter), SubmittedAt: now.UTC(), AcceptedAt: now.UTC(), Plan: plan}
+	afterChanges, err := workspace.PlanNeedsAmendment()
+	if err != nil {
+		return nil, err
+	}
+	stored := state.StoredChangePlan{AfterChanges: afterChanges, SchemaVersion: state.ArtifactSchemaVersion, Source: source, Submitter: strings.TrimSpace(submitter), SubmittedAt: now.UTC(), AcceptedAt: now.UTC(), Plan: plan}
 	if err := workspace.SavePlan(stored); err != nil {
 		return nil, err
 	}
-	return &stored, nil
+	return workspace.Plan()
 }
 
 func capturePlanDecision(root, raw string, decision planDecision, submitter string, now time.Time) (state.ChangePlan, *state.StoredChangePlan, error) {
@@ -149,6 +154,6 @@ func runPlanSubmit(root string, input io.Reader, output io.Writer, now time.Time
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "Accepted ChangePlan v%d: %s\n", stored.SchemaVersion, stored.Plan.Summary)
+	fmt.Fprintf(output, "AI Plan received: %s\nReturn to AI Plan and refresh to view it, then continue implementation.\n", stored.Plan.Summary)
 	return nil
 }

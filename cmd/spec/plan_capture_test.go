@@ -72,9 +72,8 @@ func TestCLIWaitReloadsPlanWrittenByPlanSubmitWithoutResavingIt(t *testing.T) {
 
 	app := newWorkflowApp(root, shellScreen(actionPlanCapture))
 	capture := app.active.(*planCaptureModel)
-	capture.cursor = 1
-	app.Update(key(tea.KeyEnter, ""))
-	if capture.mode != planCaptureCLIWait {
+	app.Update(key('r', "r"))
+	if capture.mode != planCaptureChoice {
 		t.Fatalf("mode=%v", capture.mode)
 	}
 	now := time.Date(2026, 8, 31, 3, 4, 5, 0, time.UTC)

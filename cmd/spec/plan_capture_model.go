@@ -20,6 +20,7 @@ const (
 
 type planCaptureModel struct {
 	raw               string
+	amend             bool
 	editor            lineEditor
 	plan              state.ChangePlan
 	mode              planCaptureMode
@@ -46,10 +47,10 @@ func (model *planCaptureModel) screen() canonicalScreen {
 	var section screenSection
 	switch model.mode {
 	case planCaptureChoice:
-		section = screenSection{ID: "plan.choice", Title: "Implementation Plan", Items: []screenItem{
-			{ID: "plan.choice.clipboard", Label: "Import plan from clipboard", Selectable: true},
-			{ID: "plan.choice.cli", Label: "Wait for `spec plan submit --stdin`", Selectable: true},
-			{ID: "plan.choice.skip", Label: "Skip plan for this change", Selectable: true},
+		section = screenSection{ID: "plan.choice", Title: "AI Plan", Items: []screenItem{
+			{ID: "plan.choice.prompt", Label: "Copy planning prompt", Selectable: true},
+			{ID: "plan.choice.paste", Label: "Paste AI plan", Selectable: true},
+			{ID: "plan.choice.skip", Label: "Continue without plan", Selectable: true},
 		}}
 	case planCaptureClipboardPreview:
 		section = screenSection{ID: "plan.preview", Title: "Plan preview", Items: []screenItem{
@@ -114,12 +115,16 @@ func (model *planCaptureModel) updateChoice(message tea.KeyPressMsg) {
 		model.cursor = wrap(model.cursor+1, 3)
 	case "p":
 		model.copyPlanningPrompt()
+	case "r":
+		model.refreshCLIPlan()
+	case "v":
+		model.importClipboard()
 	case "enter":
 		switch model.cursor {
 		case 0:
-			model.importClipboard()
+			model.copyPlanningPrompt()
 		case 1:
-			model.mode, model.cursor, model.status = planCaptureCLIWait, 0, "Waiting for an implementation plan."
+			model.openManualPaste(model.raw, "Paste the agent response, then Ctrl+Enter to preview.")
 		case 2:
 			model.decision, model.nav = planSkip, actionContinue
 		}
@@ -136,7 +141,7 @@ func (model *planCaptureModel) copyPlanningPrompt() {
 	} else if err := model.copyPlanPrompt(); err != nil {
 		model.status = "Clipboard unavailable: " + err.Error() + " (run `spec prompt --plan`)"
 	} else {
-		model.status = "Plan prompt copied to the clipboard."
+		model.status = "Planning prompt copied. Paste into your agent chat; return here with its response."
 	}
 }
 
@@ -154,6 +159,7 @@ func (model *planCaptureModel) importClipboard() {
 }
 
 func (model *planCaptureModel) previewRaw(raw string) {
+	model.raw = raw
 	block, err := extractPlanBlock(raw)
 	if err == nil {
 		model.plan, err = validateChangePlan(block)
@@ -182,7 +188,7 @@ func (model *planCaptureModel) updateClipboardError(message tea.KeyPressMsg) {
 	case "enter":
 		switch model.cursor {
 		case 0:
-			model.openManualPaste("", "Paste one AI response, then press Ctrl+Enter to preview.")
+			model.openManualPaste(model.raw, "Correct the response, then press Ctrl+Enter to preview.")
 		case 1:
 			model.importClipboard()
 		case 2:
@@ -211,7 +217,7 @@ func (model *planCaptureModel) updatePaste(message tea.KeyPressMsg) {
 		}
 		model.mode, model.cursor, model.status = planCaptureClipboardPreview, 0, ""
 		model.decision, model.acceptedPersisted = "", false
-	case "esc", "b":
+	case "esc":
 		model.mode, model.cursor, model.status = planCaptureChoice, 0, ""
 	case "ctrl+c":
 		model.nav = actionQuit
@@ -302,14 +308,17 @@ func (model *planCaptureModel) View() tea.View {
 	var title, body, footer string
 	switch model.mode {
 	case planCaptureChoice:
-		title = "Implementation Plan · Optional"
-		lines := []string{uiTitleStyle.Render("Implementation Plan"), "", "Capture what the AI intends to change before it starts coding.", "This lets Spec compare the intended implementation with what actually changed afterwards.", ""}
-		lines = append(lines, selectablePlanRows([]string{"Import plan from clipboard", "Wait for `spec plan submit --stdin`", "Skip plan for this change"}, model.cursor)...)
-		lines = append(lines, "", uiMutedStyle.Render("A plan is helpful, but never required."), "", uiMutedStyle.Render(model.status))
+		title = "AI Plan · Optional"
+		lines := []string{uiTitleStyle.Render("AI Plan"), "", "No plan captured.", ""}
+		if model.raw != "" {
+			lines[2] = "Update the current plan by paste or agent submission."
+		}
+		lines = append(lines, selectablePlanRows([]string{"Copy planning prompt", "Paste AI plan", "Continue without plan"}, model.cursor)...)
+		lines = append(lines, "", uiMutedStyle.Render("Paste the prompt into your agent chat; copy its response back here."), uiMutedStyle.Render("Agent submitted via spec plan submit --stdin? Press r to refresh."), "", uiMutedStyle.Render(model.status))
 		body = strings.Join(lines, "\n")
-		footer = uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "continue"}, {"p", "copy plan prompt"}, {"b", "back"}, {"g", "home"}}, "  ")
+		footer = uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "continue"}, {"r", "refresh"}, {"v", "clipboard"}, {"b", "back"}, {"g", "home"}}, "  ")
 	case planCaptureClipboardPreview:
-		title = "Implementation Plan · Clipboard"
+		title = "AI Plan · Clipboard"
 		detected := "✓ spec-plan detected on clipboard"
 		if model.acceptedPersisted {
 			detected = "✓ CLI-submitted plan detected"
@@ -324,17 +333,17 @@ func (model *planCaptureModel) View() tea.View {
 		body = strings.Join(lines, "\n")
 		footer = uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "action"}, {"e", "inspect/edit"}, {"b", "back"}, {"g", "home"}}, "  ")
 	case planCaptureClipboardError:
-		title = "Implementation Plan · Clipboard"
+		title = "AI Plan · Clipboard"
 		lines := []string{uiTitleStyle.Render("No valid spec-plan was detected"), "", uiMutedStyle.Render(model.status), ""}
 		lines = append(lines, selectablePlanRows([]string{"Paste response manually", "Try clipboard again", "Back to plan choices", "Skip plan for this change"}, model.cursor)...)
 		body = strings.Join(lines, "\n")
 		footer = uiKeyHints([][2]string{{"↑/↓", "select"}, {"enter", "continue"}, {"b", "back"}, {"g", "home"}}, "  ")
 	case planCapturePaste:
-		title = "Implementation Plan · Manual Paste"
+		title = "AI Plan · Manual Paste"
 		body = strings.Join([]string{uiTitleStyle.Render("Paste AI response"), "", uiMutedStyle.Render("Paste one response containing exactly one fenced spec-plan block."), "", model.editor.view(), "", uiMutedStyle.Render(model.status)}, "\n")
-		footer = uiKeyHints([][2]string{{"Ctrl+Enter", "preview"}, {"b/esc", "back"}}, "  ")
+		footer = uiKeyHints([][2]string{{"Ctrl+Enter", "preview"}, {"esc", "back"}}, "  ")
 	case planCaptureCLIWait:
-		title = "Implementation Plan · CLI"
+		title = "AI Plan · CLI"
 		body = strings.Join([]string{uiTitleStyle.Render("Waiting for an implementation plan..."), "", "Ask your AI tool to run:", "", "  spec plan submit --stdin", "", "Spec can remain open. Press r to reload durable workspace state.", "", uiMutedStyle.Render(model.status), "", uiSelectedRow("> Continue without a plan", 0)}, "\n")
 		footer = uiKeyHints([][2]string{{"r", "refresh"}, {"enter", "continue"}, {"b", "back"}, {"g", "home"}}, "  ")
 	default:
