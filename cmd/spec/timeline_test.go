@@ -83,7 +83,7 @@ func TestTimelineDerivesOnlyLegacyFactsThatArePresent(t *testing.T) {
 		}
 	}
 	if !strings.Contains(entries[1].Detail, "abcdef1") {
-		t.Fatalf("baseline detail = %q", entries[1].Detail)
+		t.Fatalf("starting state detail = %q", entries[1].Detail)
 	}
 	if !strings.Contains(entries[2].Detail, "go test ./...") {
 		t.Fatalf("verification detail = %q", entries[2].Detail)

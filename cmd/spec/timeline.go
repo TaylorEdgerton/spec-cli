@@ -46,7 +46,7 @@ func derivedTimelineEntries(record state.History) []timelineEntry {
 		add(state.TimelineSpecCreated, record.StartedAt, record.Title)
 	}
 	if record.BaseSHA != "" {
-		add(state.TimelineBaselineCaptured, record.StartedAt, "baseline "+shortSHA(record.BaseSHA))
+		add(state.TimelineBaselineCaptured, record.StartedAt, "starting state "+shortSHA(record.BaseSHA))
 	}
 	if record.Verification != nil {
 		outcome := "did not pass"
@@ -70,7 +70,7 @@ func timelineDetail(details state.TimelineDetails) string {
 		}
 	}
 	if details.BaselineSHA != "" {
-		parts = append(parts, "baseline "+shortSHA(details.BaselineSHA))
+		parts = append(parts, "starting state "+shortSHA(details.BaselineSHA))
 	}
 	if details.Count > 0 {
 		parts = append(parts, fmt.Sprintf("%d items", details.Count))
@@ -104,11 +104,12 @@ func timelineLines(entries []timelineEntry) []string {
 func timelineLabel(kind string) string {
 	labels := map[string]string{
 		string(state.TimelineSpecCreated):        "Spec created",
-		string(state.TimelineBaselineCaptured):   "Baseline captured",
+		string(state.TimelineBaselineCaptured):   "Starting state captured",
 		string(state.TimelineDiscoveryRefreshed): "Discovery refreshed",
 		string(state.TimelinePromptCopied):       "Prompt copied",
 		string(state.TimelinePromptPrinted):      "Prompt printed",
 		string(state.TimelinePlanAccepted):       "Plan accepted",
+		string(state.TimelinePlanAmended):        "Plan amended",
 		string(state.TimelineActualRefreshed):    "Actual state refreshed",
 		string(state.TimelineEvidenceRecorded):   "Evidence recorded",
 		string(state.TimelineReviewDecision):     "Review decision",

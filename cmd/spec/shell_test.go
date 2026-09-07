@@ -81,6 +81,9 @@ func TestShellScreensShareExitBackAndHelpKeys(t *testing.T) {
 
 	for name, model := range newScreens(t) {
 		model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+		if plan, ok := model.(*planModel); ok {
+			plan.received = true
+		}
 		model.Update(key(tea.KeyEsc, ""))
 		if navigation := navigationOf(model); navigation != actionBack {
 			t.Fatalf("%s esc navigation = %q, want %q", name, navigation, actionBack)
@@ -172,7 +175,7 @@ func TestShellOpensDefinitionAsAnEditOfTheActiveSpec(t *testing.T) {
 	}
 	resumed, err := change.BeginSetup(root, "", time.Now())
 	if err != nil {
-		t.Fatalf("reopening Define Change = %v", err)
+		t.Fatalf("reopening Define = %v", err)
 	}
 	if !resumed.Editing {
 		t.Fatalf("resumed setup = %+v", resumed)
