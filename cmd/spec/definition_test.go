@@ -93,7 +93,7 @@ func TestDefinitionRendersThroughSharedFullScreenShell(t *testing.T) {
 	updateModel(model, tea.WindowSizeMsg{Width: 100, Height: 32})
 	view := model.View().Content
 	plain := ansi.Strip(view)
-	for _, expected := range []string{"Spec · New Change", "Git: dirty", "Define Change", "Intent", "Scope / expected behaviour", "Acceptance", "Create Spec", "Ctrl+Enter"} {
+	for _, expected := range []string{"Spec · New Change", "Git: dirty", "Define", "Intent", "Scope / expected behaviour", "Acceptance", "Create Spec", "Ctrl+Enter"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("definition view missing %q:\n%s", expected, plain)
 		}
@@ -311,7 +311,7 @@ func definitionRepository(t *testing.T, dirty bool) (string, state.Workspace, ti
 	}
 	base, err := gitutil.Head(root)
 	if err != nil || workspace.BaseSHA != base {
-		t.Fatalf("baseline = %q, want %q, err=%v", workspace.BaseSHA, base, err)
+		t.Fatalf("starting state = %q, want %q, err=%v", workspace.BaseSHA, base, err)
 	}
 	return root, workspace, started
 }

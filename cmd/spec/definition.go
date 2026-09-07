@@ -48,7 +48,7 @@ func (model *definitionModel) screen() canonicalScreen {
 		{ID: definitionAcceptanceID, Label: "Acceptance", Selectable: true},
 		{ID: definitionCreateID, Label: "Create Spec", Selectable: true, Action: screenAction(actionOverview)},
 	}
-	return canonicalScreen{Sections: []screenSection{{ID: "definition", Title: "Define Change", Items: items}}, Cursor: model.focus}
+	return canonicalScreen{Sections: []screenSection{{ID: "definition", Title: "Define", Items: items}}, Cursor: model.focus}
 }
 
 func (model *definitionModel) Init() tea.Cmd { return nil }
