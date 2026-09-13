@@ -104,7 +104,7 @@ func TestPlanBoundaryDetectsRepositoryOperations(t *testing.T) {
 				t.Fatal(err)
 			}
 			if operation == "commit" {
-				for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "implementation"}} {
+				for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=Spec Test", "-c", "user.email=spec@example.invalid", "commit", "-m", "implementation"}} {
 					if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
 						t.Fatalf("%s: %v", out, err)
 					}
