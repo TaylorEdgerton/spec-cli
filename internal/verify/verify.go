@@ -18,20 +18,30 @@ import (
 const maxStoredOutput = 128 * 1024
 
 func Run(root string, now time.Time) (state.Verification, error) {
+	result, _, err := run(root, "", now, false)
+	return result, err
+}
+
+func run(root, phase string, now time.Time, persistEvidence bool) (state.Verification, []state.EvidenceRun, error) {
 	workspace, err := state.Load(root)
 	if err != nil {
-		return state.Verification{}, err
+		return state.Verification{}, nil, err
 	}
 	commands, err := config.VerificationCommands(root)
 	if err != nil {
-		return state.Verification{}, err
+		return state.Verification{}, nil, err
 	}
 	if len(commands) == 0 {
-		return state.Verification{}, fmt.Errorf("no verification is configured; run `spec` to configure it")
+		return state.Verification{}, nil, fmt.Errorf("no verification is configured; run `spec` to configure it")
 	}
 	result := state.Verification{Commands: commands, StartedAt: now.UTC()}
+	runs := make([]state.EvidenceRun, 0, len(commands))
 	var output strings.Builder
-	for _, command := range commands {
+	for index, command := range commands {
+		commandStarted := time.Now().UTC()
+		if index == 0 {
+			commandStarted = now.UTC()
+		}
 		output.WriteString("-> ")
 		output.WriteString(command)
 		output.WriteByte('\n')
@@ -39,19 +49,44 @@ func Run(root string, now time.Time) (state.Verification, error) {
 		cmd.Dir = root
 		cmd.Env = os.Environ()
 		combined, runErr := cmd.CombinedOutput()
+		commandFinished := time.Now().UTC()
 		output.Write(combined)
 		if len(combined) > 0 && combined[len(combined)-1] != '\n' {
 			output.WriteByte('\n')
 		}
+		if persistEvidence {
+			worktreeFingerprint, fingerprintErr := gitutil.WorktreeFingerprint(root)
+			if fingerprintErr != nil {
+				return result, runs, fingerprintErr
+			}
+			collected := Collect(command, combined, runErr == nil)
+			evidenceRun := state.EvidenceRun{
+				SchemaVersion:       state.ArtifactSchemaVersion,
+				ID:                  evidenceRunID(workspace.SpecID, phase, command, commandStarted, index),
+				Phase:               phase,
+				Command:             command,
+				Passed:              runErr == nil,
+				ParserError:         collected.ParserError,
+				BaselineSHA:         workspace.BaseSHA,
+				WorktreeFingerprint: worktreeFingerprint,
+				StartedAt:           commandStarted,
+				FinishedAt:          commandFinished,
+				Tests:               collected.Tests,
+			}
+			if err := workspace.AppendEvidence(evidenceRun); err != nil {
+				return result, runs, err
+			}
+			runs = append(runs, evidenceRun)
+		}
 		if runErr != nil {
 			result.FailedCommand = command
-			result.FinishedAt = time.Now().UTC()
+			result.FinishedAt = commandFinished
 			result.Output = truncate(output.String())
 			result.Fingerprint, _ = Fingerprint(root, commands)
 			if saveErr := workspace.SaveVerification(result); saveErr != nil {
-				return result, fmt.Errorf("%s failed and result could not be saved: %v", command, saveErr)
+				return result, runs, fmt.Errorf("%s failed and result could not be saved: %v", command, saveErr)
 			}
-			return result, fmt.Errorf("%s failed: %w", command, runErr)
+			return result, runs, fmt.Errorf("%s failed: %w", command, runErr)
 		}
 		result.Completed++
 	}
@@ -60,12 +95,17 @@ func Run(root string, now time.Time) (state.Verification, error) {
 	result.Output = truncate(output.String())
 	result.Fingerprint, err = Fingerprint(root, commands)
 	if err != nil {
-		return result, err
+		return result, runs, err
 	}
 	if err := workspace.SaveVerification(result); err != nil {
-		return result, err
+		return result, runs, err
 	}
-	return result, nil
+	return result, runs, nil
+}
+
+func evidenceRunID(specID, phase, command string, started time.Time, index int) string {
+	hash := sha256.Sum256([]byte(specID + "\x00" + phase + "\x00" + command))
+	return fmt.Sprintf("%d-%d-%s", started.UnixNano(), index, hex.EncodeToString(hash[:6]))
 }
 
 func Current(root string, result *state.Verification) (bool, error) {

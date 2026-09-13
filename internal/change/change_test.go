@@ -25,8 +25,8 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	if _, err := state.Register(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(root, "change one", time.Now()); err == nil || !strings.Contains(err.Error(), "baseline") {
-		t.Fatalf("expected baseline error, got %v", err)
+	if _, err := New(root, "change one", time.Now()); err == nil || !strings.Contains(err.Error(), "starting state") {
+		t.Fatalf("expected starting state error, got %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "script.py"), []byte("print('one')\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -119,6 +119,129 @@ func TestLifecycleUsesWorkspaceSpecAndArchivesIt(t *testing.T) {
 	}
 }
 
+func TestDoneCapturesHumanContractInHistory(t *testing.T) {
+	root := committedRepo(t)
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 8, 30, 4, 5, 6, 0, time.UTC)
+	setup, err := BeginSetup(root, "Disable automatic indexing", started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.Outcome = "Manual indexing remains available when automatic indexing is disabled."
+	setup.Criteria = []state.SetupCriterion{
+		{Text: "Automatic indexing remains enabled by default", Included: true},
+		{Text: "Manual indexing still works", Included: true},
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	path, err := CreateSetup(root, setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	criteria := AcceptanceCriteria(string(data))
+	for index := range criteria {
+		criteria[index].Checked = true
+	}
+	updated, err := UpdateAcceptanceCriteria(string(data), criteria)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("SPEC_CONFIG_HOME"), "config.yml"), []byte("verify:\n  - 'true'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyrun.Run(root, started.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	record, err := Done(root, "reviewed by human", started.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SpecID != "SPEC-001" || record.Intent != setup.Title || record.Scope != setup.Outcome {
+		t.Fatalf("contract snapshot = %+v", record)
+	}
+	if record.AcceptanceReview.Total != 2 || record.AcceptanceReview.Reviewed != 2 || !record.CompletionAcknowledged {
+		t.Fatalf("acceptance snapshot = %+v acknowledged=%v", record.AcceptanceReview, record.CompletionAcknowledged)
+	}
+	if record.DurationSeconds != 600 {
+		t.Fatalf("duration = %d", record.DurationSeconds)
+	}
+}
+
+func TestDoneAcknowledgesCompletionWithoutAutomatedEvidenceOrCheckedCriteria(t *testing.T) {
+	root := committedRepo(t)
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 8, 30, 4, 5, 6, 0, time.UTC)
+	setup, err := BeginSetup(root, "Disable automatic indexing", started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.Outcome = "Manual indexing remains available."
+	setup.Criteria = []state.SetupCriterion{
+		{Text: "Automatic indexing remains enabled by default", Included: true},
+		{Text: "Manual indexing still works", Included: true},
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateSetup(root, setup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("base\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "added.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveVerification(state.Verification{
+		Commands: []string{"go test ./..."}, Passed: false, FailedCommand: "go test ./...",
+		StartedAt: started, FinishedAt: started.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := Done(root, "reviewed by human", started.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("completion was refused despite an explicit acknowledgement: %v", err)
+	}
+	if !record.CompletionAcknowledged {
+		t.Fatal("completion was not recorded as acknowledged")
+	}
+	if record.AcceptanceReview.Total != 2 || record.AcceptanceReview.Reviewed != 0 {
+		t.Fatalf("unreviewed criteria were not archived honestly: %+v", record.AcceptanceReview)
+	}
+	if record.Verification == nil || record.Verification.Passed {
+		t.Fatalf("failing verification was not archived honestly: %+v", record.Verification)
+	}
+	if record.Stats.Files != 2 || record.Stats.Additions != 2 {
+		t.Fatalf("actual stats = %+v", record.Stats)
+	}
+	if record.PlanDrift != (state.PlanDriftSummary{}) {
+		t.Fatalf("plan drift without a plan = %+v", record.PlanDrift)
+	}
+}
+
 func TestNewRefusesExistingSpecFile(t *testing.T) {
 	root := committedRepo(t)
 	if _, err := state.Register(root); err != nil {
@@ -207,6 +330,9 @@ func TestSetupCreatesSpecWithUncheckedCriteria(t *testing.T) {
 	}
 	if strings.Contains(content, "Excluded suggestion") || strings.Contains(content, "- [x]") {
 		t.Fatalf("created criteria are incorrect:\n%s", content)
+	}
+	if strings.Contains(content, "## Relevant Files") {
+		t.Fatalf("guided specification includes manual file bookkeeping:\n%s", content)
 	}
 	workspace, err = state.Load(root)
 	if err != nil {

@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,8 +10,135 @@ import (
 	"time"
 
 	"github.com/TaylorEdgerton/spec-cli/internal/change"
+	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
 )
+
+func TestBuildPlanAndImplementationPromptsHaveDistinctContracts(t *testing.T) {
+	root := promptRepository(t, state.Setup{
+		Title: "Disable automatic indexing", Outcome: "Manual indexing remains available",
+		Criteria: []state.SetupCriterion{{Text: "Automatic indexing remains enabled by default", Included: true}},
+	})
+	planPrompt, _, err := BuildKind(root, false, Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Disable automatic indexing", "Manual indexing remains available", "Automatic indexing remains enabled by default",
+		"```spec-plan", `"summary"`, `"files"`, `"integration_points"`, `"verification"`, `"uncertainties"`,
+		"spec plan submit --stdin", "<<'SPEC_PLAN'", "investigate", "Do not implement", "advisory",
+	} {
+		if !strings.Contains(planPrompt, expected) {
+			t.Fatalf("plan prompt missing %q:\n%s", expected, planPrompt)
+		}
+	}
+	if strings.Count(planPrompt, "```spec-plan") != 1 {
+		t.Fatalf("plan prompt must contain exactly one fenced fallback:\n%s", planPrompt)
+	}
+
+	implementationPrompt, _, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"The plan is required", "```spec-plan", "Do not implement"} {
+		if strings.Contains(implementationPrompt, forbidden) {
+			t.Fatalf("implementation prompt contains planning-only instruction %q:\n%s", forbidden, implementationPrompt)
+		}
+	}
+	if !strings.Contains(implementationPrompt, "No accepted ChangePlan is present") || !strings.Contains(implementationPrompt, "implement") {
+		t.Fatalf("implementation prompt lacks direct no-plan instruction:\n%s", implementationPrompt)
+	}
+}
+
+func TestImplementationPromptIncludesAcceptedPlanWithoutManufacturingOne(t *testing.T) {
+	root := promptRepository(t, state.Setup{Title: "Disable automatic indexing"})
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 31, 1, 2, 3, 0, time.UTC)
+	accepted := state.StoredChangePlan{
+		SchemaVersion: state.ArtifactSchemaVersion,
+		Source:        state.PlanSourceCLI,
+		Submitter:     "agent",
+		SubmittedAt:   now,
+		AcceptedAt:    now,
+		Plan: state.ChangePlan{
+			Summary: "Respect the indexing setting",
+			Files:   []state.PlannedFile{{Path: "indexer/indexer.go", Action: state.PlanFileModify, Reason: "guard automatic indexing"}},
+		},
+	}
+	if err := workspace.SavePlan(accepted); err != nil {
+		t.Fatal(err)
+	}
+	content, _, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"## Accepted ChangePlan", "Respect the indexing setting", "indexer/indexer.go", "guard automatic indexing"} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("implementation prompt missing %q:\n%s", expected, content)
+		}
+	}
+	if strings.Contains(content, "No accepted ChangePlan is present") || strings.Contains(content, "```spec-plan") {
+		t.Fatalf("implementation prompt manufactured plan-capture instructions:\n%s", content)
+	}
+}
+
+func TestBuildContinuesWhenDiscoveryReturnsNoResultsOrFails(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		find func(string, discovery.Query) ([]discovery.Result, error)
+	}{
+		{name: "empty", find: func(string, discovery.Query) ([]discovery.Result, error) { return nil, nil }},
+		{name: "failure", find: func(string, discovery.Query) ([]discovery.Result, error) { return nil, errors.New("index unavailable") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := promptRepository(t, state.Setup{Title: "Small change"})
+			original := findContext
+			called := false
+			findContext = func(root string, query discovery.Query) ([]discovery.Result, error) {
+				called = true
+				return test.find(root, query)
+			}
+			t.Cleanup(func() { findContext = original })
+			content, _, err := Build(root, false)
+			if err != nil || !called || !strings.Contains(content, "Small change") {
+				t.Fatalf("prompt=%q called=%v err=%v", content, called, err)
+			}
+		})
+	}
+}
+
+func promptRepository(t *testing.T, setup state.Setup) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	runGit(t, root, "init")
+	write(t, root, "main.go", "package main\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "-c", "user.name=Spec Test", "-c", "user.email=spec@example.invalid", "commit", "-m", "baseline")
+	if _, err := state.Register(root); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := change.BeginSetup(root, setup.Title, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft.Outcome, draft.Limits, draft.Criteria = setup.Outcome, setup.Limits, setup.Criteria
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.SaveSetup(draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := change.CreateSetup(root, draft); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
 
 func TestBuildUsesSelectedContextAndFailedVerification(t *testing.T) {
 	root := t.TempDir()
@@ -71,8 +199,8 @@ func TestBuildUsesSelectedContextAndFailedVerification(t *testing.T) {
 			t.Errorf("prompt does not contain %q", required)
 		}
 	}
-	if strings.Contains(result, "Add output.") || strings.Contains(result, "## Current specification") {
-		t.Fatal("prompt duplicates the active specification")
+	if strings.Contains(result, "## Current specification") || strings.Count(result, "Intent: Add output.") != 1 {
+		t.Fatal("prompt does not contain exactly one concise change contract")
 	}
 	if strings.Contains(result, "Relevant file: .spec.md") {
 		t.Fatal("prompt includes .spec.md as file content")
@@ -124,6 +252,53 @@ func TestBuildIncludesRelevantFileContentsOnlyWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(result, "## Relevant file: README.md") || !strings.Contains(result, "relevant file content marker") {
 		t.Fatalf("prompt does not embed requested file content:\n%s", result)
+	}
+}
+
+func TestBuildDiscoversCompactContextWithoutRelevantFilesSection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SPEC_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SPEC_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	runGit(t, root, "init")
+	write(t, root, "health.go", "package health\n\nfunc checkDatabaseHealth() bool { return true }\n")
+	write(t, root, "unrelated.go", "package unrelated\n")
+	write(t, root, "notes.txt", "report\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "-c", "user.name=Spec Test", "-c", "user.email=spec@example.invalid", "commit", "-m", "baseline")
+	workspace, err := state.Register(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := state.Setup{
+		Title:    "Report database health",
+		Outcome:  "Database health is available",
+		Criteria: []state.SetupCriterion{{Text: "checkDatabaseHealth reports status", Included: true}},
+	}
+	if err := workspace.BeginSetup("baseline", time.Now(), setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := change.CreateSetup(root, setup); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(change.ActivePath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(current), "Relevant Files") {
+		t.Fatalf("guided Spec contains Relevant Files:\n%s", current)
+	}
+
+	result, info, err := Build(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"## Likely change area", "`health.go`", "path matches"} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("prompt missing %q:\n%s", expected, result)
+		}
+	}
+	if strings.Contains(result, "`unrelated.go`") || strings.Contains(result, "`notes.txt`") || len(info.Files) != 1 || info.Files[0] != "health.go" {
+		t.Fatalf("prompt context = %+v\n%s", info, result)
 	}
 }
 

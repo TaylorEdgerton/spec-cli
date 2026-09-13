@@ -1,0 +1,78 @@
+package main
+
+type shellScreen string
+
+const (
+	screenHome       shellScreen = "home"
+	screenDefinition shellScreen = "definition"
+	screenOverview   shellScreen = "overview"
+	screenPlan       shellScreen = "plan"
+	screenReview     shellScreen = "review"
+	screenComplete   shellScreen = "complete"
+	screenHistory    shellScreen = "history"
+	screenExplore    shellScreen = "explore"
+	screenDocuments  shellScreen = "documents"
+	screenBack       shellScreen = "back"
+	screenExit       shellScreen = "exit"
+	screenStay       shellScreen = ""
+)
+
+const (
+	actionNone          = ""
+	actionBack          = "back"
+	actionHome          = "home"
+	actionQuit          = "quit"
+	actionInitialize    = "initialize"
+	actionNew           = "new"
+	actionResume        = "resume"
+	actionExplore       = "explore"
+	actionRecent        = "recent"
+	actionDocuments     = "documents"
+	actionREADME        = "create-readme"
+	actionRunbook       = "create-runbook"
+	actionPrompt        = "copy-implementation-prompt"
+	actionBaseline      = "baseline-details"
+	actionDefinition    = "definition"
+	actionOverview      = "overview"
+	actionPlan          = "plan"
+	actionReview        = "review"
+	actionSummary       = "summary"
+	actionReviewChanges = "review-changes"
+	actionIntegration   = "review-integration"
+	actionDiff          = "review-diff"
+	actionEvidence      = "evidence"
+	actionHistory       = "history"
+	actionComplete      = "complete"
+	actionCompletion    = "completion-sign-off"
+	actionChanges       = "request-changes"
+)
+
+func screenForAction(action string) shellScreen {
+	switch action {
+	case actionHome:
+		return screenHome
+	case actionQuit:
+		return screenExit
+	case actionBack, actionChanges:
+		return screenBack
+	case actionComplete:
+		return screenHistory
+	case actionCompletion:
+		return screenComplete
+	case actionDefinition:
+		return screenDefinition
+	case actionOverview:
+		return screenOverview
+	case actionPlan:
+		return screenPlan
+	case actionReview, actionSummary, actionReviewChanges, actionIntegration, actionEvidence, actionDiff:
+		return screenReview
+	case actionHistory:
+		return screenHistory
+	case actionExplore:
+		return screenExplore
+	case actionDocuments:
+		return screenDocuments
+	}
+	return screenStay
+}

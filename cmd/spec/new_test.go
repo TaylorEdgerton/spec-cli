@@ -97,23 +97,29 @@ func TestVerificationPromptIsBoundedToSetup(t *testing.T) {
 	}
 }
 
-func TestSetupReviewUsesBoundedSummary(t *testing.T) {
-	setup := state.Setup{
-		Title:   "Fix reconnect handling " + strings.Repeat("safely ", 20),
-		Outcome: "Reconnect automatically",
+func TestChoiceMenusLeaveMouseEventsToTheTerminal(t *testing.T) {
+	model := &choiceModel{items: []string{"Explore context", "Continue"}, selected: -1}
+	view := model.View()
+	if view.MouseMode != tea.MouseModeNone || view.OnMouse != nil {
+		t.Fatal("choice menu captures terminal mouse events")
+	}
+}
+
+func TestDiscoveryQueryUsesOnlyIncludedCriteria(t *testing.T) {
+	query := discoveryQuery(state.Setup{
+		Title:   "Database health",
+		Outcome: "Health is reported",
+		Limits:  "Keep compatibility",
 		Criteria: []state.SetupCriterion{
-			{Text: strings.Repeat("criterion ", 100), Included: true},
-			{Text: "Excluded", Included: false},
+			{Text: "Report failures", Included: true},
+			{Text: "Discarded criterion", Included: false},
 		},
+	})
+	if len(query.Criteria) != 1 || query.Criteria[0] != "Report failures" {
+		t.Fatalf("query = %+v", query)
 	}
-	summary := formatSetupSummary(setup)
-	for _, expected := range []string{"Change: Fix reconnect handling", setup.Outcome, "Limits: none", "Success criteria: 1"} {
-		if !strings.Contains(summary, expected) {
-			t.Fatalf("summary missing %q: %s", expected, summary)
-		}
-	}
-	if strings.Contains(summary, "criterion criterion") || !strings.Contains(summary, "…") || len(strings.Split(summary, "\n")) != 4 {
-		t.Fatalf("summary is not bounded: %s", summary)
+	if query.Intent != "Database health" || query.Outcome != "Health is reported" {
+		t.Fatalf("query fields = %+v", query)
 	}
 }
 

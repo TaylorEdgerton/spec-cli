@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/TaylorEdgerton/spec-cli/internal/aiusage"
+	"github.com/TaylorEdgerton/spec-cli/internal/evidence"
 	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
+	"github.com/TaylorEdgerton/spec-cli/internal/review"
 	"github.com/TaylorEdgerton/spec-cli/internal/state"
-	verifyrun "github.com/TaylorEdgerton/spec-cli/internal/verify"
 )
 
 const ActiveFilename = ".spec.md"
@@ -22,13 +23,14 @@ func ActivePath(root string) string {
 func New(root, title string, now time.Time) (string, error) {
 	base, err := gitutil.Head(root)
 	if err != nil {
-		return "", fmt.Errorf("a baseline commit is required; commit the current project before `spec new`")
+		return "", fmt.Errorf("a starting state commit is required; commit the current project before `spec new`")
 	}
 	workspace, err := state.Load(root)
 	if err != nil {
 		return "", err
 	}
 	title = strings.TrimSpace(title)
+	gitState := worktreeState(root)
 	path := ActivePath(root)
 	if _, err := os.Stat(path); err == nil {
 		if workspace.Active {
@@ -51,7 +53,7 @@ func New(root, title string, now time.Time) (string, error) {
 	if title != "" {
 		content += title + "\n"
 	}
-	content += "\n## Scope\n\n## Constraints\n\n## Acceptance Criteria\n\n## Relevant Files\n\n## Notes\n"
+	content += "\n## Scope\n\n## Constraints\n\n## Acceptance Criteria\n\n## Notes\n"
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return "", err
@@ -66,8 +68,11 @@ func New(root, title string, now time.Time) (string, error) {
 		_ = os.Remove(path)
 		return "", closeErr
 	}
-	if err := workspace.Start(title, base, now.UTC()); err != nil {
+	if err := workspace.Start(title, base, now.UTC(), gitState); err != nil {
 		_ = os.Remove(path)
+		return "", err
+	}
+	if err := workspace.CaptureStartingState(); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -99,16 +104,78 @@ func BeginSetup(root, title string, now time.Time) (state.Setup, error) {
 	}
 	base, err := gitutil.Head(root)
 	if err != nil {
-		return state.Setup{}, fmt.Errorf("a baseline commit is required; commit the current project before `spec new`")
+		return state.Setup{}, fmt.Errorf("a starting state commit is required; commit the current project before `spec new`")
 	}
 	setup := state.Setup{Stage: "change", Title: strings.TrimSpace(title)}
 	if setup.Title != "" {
 		setup.Stage = "outcome"
 	}
-	if err := workspace.BeginSetup(base, now.UTC(), setup); err != nil {
+	if err := workspace.BeginSetup(base, now.UTC(), setup, worktreeState(root)); err != nil {
+		return state.Setup{}, err
+	}
+	if err := workspace.CaptureStartingState(); err != nil {
 		return state.Setup{}, err
 	}
 	return setup, nil
+}
+
+// BeginFollowUp starts a new change from the human-authored parts of a
+// completed Spec. The completed record, its plan, and its evidence remain
+// immutable history; the follow-up receives a new ID and current Git baseline.
+func BeginFollowUp(root string, record state.History, now time.Time) (state.Setup, error) {
+	workspace, err := state.Load(root)
+	if err != nil {
+		return state.Setup{}, err
+	}
+	if workspace.Active {
+		return state.Setup{}, fmt.Errorf("another active Spec must be completed before starting a follow-up")
+	}
+	sourceID := strings.TrimSpace(record.SpecID)
+	if sourceID == "" {
+		return state.Setup{}, fmt.Errorf("the completed Spec has no ID to link from")
+	}
+	archive := filepath.Clean(filepath.FromSlash(record.SpecArchive))
+	if record.SpecArchive == "" || filepath.IsAbs(archive) || archive == ".." || strings.HasPrefix(archive, ".."+string(filepath.Separator)) {
+		return state.Setup{}, fmt.Errorf("the completed Spec has no readable archive to copy acceptance criteria from")
+	}
+	markdown, err := os.ReadFile(filepath.Join(workspace.Dir, archive))
+	if err != nil {
+		return state.Setup{}, fmt.Errorf("read completed Spec archive: %w", err)
+	}
+	setup := state.Setup{
+		Stage: "change", Title: strings.TrimSpace(record.Intent), Outcome: strings.TrimSpace(record.Scope), OriginSpecID: sourceID,
+	}
+	if setup.Title == "" {
+		setup.Title = strings.TrimSpace(record.Title)
+	}
+	for _, criterion := range AcceptanceCriteria(string(markdown)) {
+		setup.Criteria = append(setup.Criteria, state.SetupCriterion{Text: criterion.Text, Included: true})
+	}
+	base, err := gitutil.Head(root)
+	if err != nil {
+		return state.Setup{}, fmt.Errorf("a starting state commit is required before starting a follow-up")
+	}
+	if err := workspace.BeginSetup(base, now.UTC(), setup, worktreeState(root)); err != nil {
+		return state.Setup{}, err
+	}
+	if err := workspace.CaptureStartingState(); err != nil {
+		return state.Setup{}, err
+	}
+	return setup, nil
+}
+
+func worktreeState(root string) string {
+	status, err := gitutil.Status(root)
+	if err != nil {
+		return "unknown"
+	}
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "##") {
+			return "dirty"
+		}
+	}
+	return "clean"
 }
 
 func BeginEdit(root string) (state.Setup, error) {
@@ -200,9 +267,9 @@ func SaveSetup(root string, setup state.Setup) (string, error) {
 }
 
 func SetupFromMarkdown(markdown string) (state.Setup, error) {
-	title := documentTitle(markdown)
+	title := sectionText(markdown, "Intent")
 	if title == "" {
-		title = sectionText(markdown, "Intent")
+		title = documentTitle(markdown)
 	}
 	if title == "" {
 		return state.Setup{}, fmt.Errorf("active specification has no title or Intent")
@@ -260,7 +327,6 @@ func RenderSetup(setup state.Setup) string {
 		}
 	}
 	writeTaskSection(&builder, "Acceptance Criteria", criteria)
-	writeListSection(&builder, "Relevant Files", nil)
 	builder.WriteString("## Notes\n")
 	return builder.String()
 }
@@ -469,21 +535,15 @@ func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) 
 		return state.History{}, err
 	}
 	criteria := AcceptanceCriteria(string(current))
+	reviewedCriteria := 0
 	for _, criterion := range criteria {
-		if !criterion.Checked {
-			return state.History{}, fmt.Errorf("acceptance criteria are not fully reviewed; run `spec done`")
+		if criterion.Checked {
+			reviewedCriteria++
 		}
 	}
 	verification, err := workspace.Verification()
 	if err != nil {
 		return state.History{}, err
-	}
-	currentVerification, err := verifyrun.Current(root, verification)
-	if err != nil {
-		return state.History{}, err
-	}
-	if !currentVerification {
-		return state.History{}, fmt.Errorf("verification is not current and passing; run `spec verify`")
 	}
 	files, err := gitutil.ChangedFiles(root, workspace.BaseSHA)
 	if err != nil {
@@ -502,15 +562,60 @@ func DoneWithUsage(root, summary string, now time.Time, usage *aiusage.Summary) 
 		historyVerification = &copy
 	}
 	record := state.History{
-		Title: title, StartedAt: workspace.StartedAt, BaseSHA: workspace.BaseSHA,
+		Title: title, Intent: sectionText(string(current), "Intent"), Scope: sectionText(string(current), "Scope"),
+		StartedAt: workspace.StartedAt, BaseSHA: workspace.BaseSHA,
 		FinishedAt: now.UTC(), EndSHA: end, ChangedFiles: files,
 		Verification: historyVerification, Summary: strings.TrimSpace(summary), AIUsage: usage,
+		AcceptanceReview:       state.AcceptanceReview{Total: len(criteria), Reviewed: reviewedCriteria},
+		CompletionAcknowledged: true,
 	}
+	record.Stats, record.PlanDrift, record.EvidenceSummary = reviewFacts(root, workspace)
 	record, err = workspace.Finish(record, current, path)
 	if err != nil {
 		return state.History{}, err
 	}
 	return record, nil
+}
+
+func reviewFacts(root string, workspace state.Workspace) (state.ChangeStats, state.PlanDriftSummary, state.EvidenceSummary) {
+	var stats state.ChangeStats
+	var drift state.PlanDriftSummary
+	var summary state.EvidenceSummary
+	plan, _ := workspace.Plan()
+	if changes, err := gitutil.Changes(root, workspace.BaseSHA); err == nil {
+		projection := review.Project(plan, changes, nil)
+		stats = state.ChangeStats{
+			Files: projection.Stats.Files, Additions: projection.Stats.Additions, Deletions: projection.Stats.Deletions,
+		}
+		drift = state.PlanDriftSummary{
+			Matched: projection.Drift.Matched, Additional: projection.Drift.Additional, Untouched: projection.Drift.Untouched,
+		}
+	}
+	runs, err := workspace.EvidenceRuns()
+	if err != nil {
+		return stats, drift, summary
+	}
+	report := evidence.Classify(runs, "")
+	tests := map[string]bool{}
+	for _, item := range report.Items {
+		switch item.Category {
+		case evidence.CategoryExisting:
+			summary.Existing++
+		case evidence.CategoryFailThenPass:
+			summary.FailThenPass++
+		case evidence.CategoryNewTest:
+			summary.NewTests++
+		case evidence.CategoryModifiedExisting:
+			summary.ModifiedExisting++
+		case evidence.CategoryManual:
+			summary.Manual++
+		}
+		if item.Automated {
+			tests[item.ID] = true
+		}
+	}
+	stats.TestsAdded = len(tests)
+	return stats, drift, summary
 }
 
 func withoutActiveSpec(files []string) []string {

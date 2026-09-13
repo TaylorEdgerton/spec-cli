@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,25 +29,31 @@ type SetupCriterion struct {
 }
 
 type Setup struct {
-	Stage    string           `json:"stage"`
-	Editing  bool             `json:"editing,omitempty"`
-	Title    string           `json:"title,omitempty"`
-	Outcome  string           `json:"outcome,omitempty"`
-	Limits   string           `json:"limits,omitempty"`
-	Input    string           `json:"input,omitempty"`
-	Criteria []SetupCriterion `json:"criteria,omitempty"`
+	Stage        string           `json:"stage"`
+	Editing      bool             `json:"editing,omitempty"`
+	Title        string           `json:"title,omitempty"`
+	Outcome      string           `json:"outcome,omitempty"`
+	Limits       string           `json:"limits,omitempty"`
+	Input        string           `json:"input,omitempty"`
+	Criteria     []SetupCriterion `json:"criteria,omitempty"`
+	OriginSpecID string           `json:"origin_spec_id,omitempty"`
 }
 
 type Metadata struct {
-	Root           string          `json:"root"`
-	ID             string          `json:"id"`
-	Active         bool            `json:"active"`
-	Title          string          `json:"title,omitempty"`
-	StartedAt      time.Time       `json:"started_at,omitempty"`
-	BaseSHA        string          `json:"base_sha,omitempty"`
-	Setup          *Setup          `json:"setup,omitempty"`
-	VerifyCommands []string        `json:"verify_commands,omitempty"`
-	SandboxSession *SandboxSession `json:"sandbox_session,omitempty"`
+	Root                string          `json:"root"`
+	ID                  string          `json:"id"`
+	SpecID              string          `json:"spec_id,omitempty"`
+	NextSpecNumber      int             `json:"next_spec_number,omitempty"`
+	Active              bool            `json:"active"`
+	Title               string          `json:"title,omitempty"`
+	StartedAt           time.Time       `json:"started_at,omitempty"`
+	BaseSHA             string          `json:"base_sha,omitempty"`
+	GitState            string          `json:"git_state,omitempty"`
+	StartingFingerprint string          `json:"starting_fingerprint,omitempty"`
+	OriginSpecID        string          `json:"origin_spec_id,omitempty"`
+	Setup               *Setup          `json:"setup,omitempty"`
+	VerifyCommands      []string        `json:"verify_commands,omitempty"`
+	SandboxSession      *SandboxSession `json:"sandbox_session,omitempty"`
 }
 
 type Verification struct {
@@ -61,21 +68,42 @@ type Verification struct {
 }
 
 type History struct {
-	Title        string           `json:"title"`
-	StartedAt    time.Time        `json:"started_at"`
-	BaseSHA      string           `json:"base_sha"`
-	FinishedAt   time.Time        `json:"finished_at"`
-	EndSHA       string           `json:"end_sha,omitempty"`
-	ChangedFiles []string         `json:"changed_files,omitempty"`
-	Verification *Verification    `json:"verification,omitempty"`
-	Summary      string           `json:"summary,omitempty"`
-	SpecArchive  string           `json:"spec_archive"`
-	AIUsage      *aiusage.Summary `json:"ai_usage,omitempty"`
+	SpecID                 string            `json:"spec_id,omitempty"`
+	OriginSpecID           string            `json:"origin_spec_id,omitempty"`
+	Title                  string            `json:"title"`
+	Intent                 string            `json:"intent,omitempty"`
+	Scope                  string            `json:"scope,omitempty"`
+	StartedAt              time.Time         `json:"started_at"`
+	BaseSHA                string            `json:"base_sha"`
+	StartingFingerprint    string            `json:"starting_fingerprint,omitempty"`
+	FinishedAt             time.Time         `json:"finished_at"`
+	EndSHA                 string            `json:"end_sha,omitempty"`
+	ChangedFiles           []string          `json:"changed_files,omitempty"`
+	Verification           *Verification     `json:"verification,omitempty"`
+	Summary                string            `json:"summary,omitempty"`
+	SpecArchive            string            `json:"spec_archive"`
+	AIUsage                *aiusage.Summary  `json:"ai_usage,omitempty"`
+	AcceptanceReview       AcceptanceReview  `json:"acceptance_review,omitempty"`
+	Stats                  ChangeStats       `json:"stats,omitempty"`
+	Plan                   *StoredChangePlan `json:"plan,omitempty"`
+	PlanDrift              PlanDriftSummary  `json:"plan_drift,omitempty"`
+	Evidence               []EvidenceRun     `json:"evidence,omitempty"`
+	EvidenceSummary        EvidenceSummary   `json:"evidence_summary,omitempty"`
+	Timeline               []TimelineEvent   `json:"timeline,omitempty"`
+	DurationSeconds        int64             `json:"duration_seconds,omitempty"`
+	CompletionAcknowledged bool              `json:"completion_acknowledged,omitempty"`
 }
 
 type Workspace struct {
 	Dir string
 	Metadata
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func configBase() (string, error) {
@@ -250,41 +278,100 @@ func (workspace Workspace) saveMetadata() error {
 	return writeJSON(filepath.Join(workspace.Dir, "metadata.json"), workspace.Metadata)
 }
 
-func (workspace *Workspace) Start(title, baseSHA string, now time.Time) error {
-	if workspace.Active {
-		return fmt.Errorf("a change is already active; finish it with `spec done`")
-	}
-	for _, name := range []string{"prompt.md", "verification.json"} {
+func (workspace *Workspace) prepareNewSpec() error {
+	for _, name := range activeArtifactNames() {
 		if err := os.Remove(filepath.Join(workspace.Dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	maximum := workspace.NextSpecNumber
+	records, err := workspace.HistoryRecords()
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if !strings.HasPrefix(record.SpecID, "SPEC-") {
+			continue
+		}
+		number, parseErr := strconv.Atoi(strings.TrimPrefix(record.SpecID, "SPEC-"))
+		if parseErr == nil && number > maximum {
+			maximum = number
+		}
+	}
+	workspace.NextSpecNumber = maximum + 1
+	workspace.SpecID = fmt.Sprintf("SPEC-%03d", workspace.NextSpecNumber)
+	return nil
+}
+
+func (workspace Workspace) recordSpecStart(now time.Time) error {
+	created := TimelineEvent{
+		SchemaVersion: ArtifactSchemaVersion, ID: workspace.SpecID + ":created", Type: TimelineSpecCreated,
+		Actor: "human", Source: "spec", OccurredAt: now.UTC(),
+		Details: TimelineDetails{SpecID: workspace.SpecID, Title: workspace.Title},
+	}
+	if err := workspace.AppendTimeline(created); err != nil {
+		return err
+	}
+	if err := workspace.AppendTimeline(TimelineEvent{
+		SchemaVersion: ArtifactSchemaVersion, ID: workspace.SpecID + ":baseline", Type: TimelineBaselineCaptured,
+		Actor: "spec", Source: "git", OccurredAt: now.UTC(),
+		Details: TimelineDetails{SpecID: workspace.SpecID, BaselineSHA: workspace.BaseSHA},
+	}); err != nil {
+		return err
+	}
+	if workspace.OriginSpecID != "" {
+		return workspace.AppendTimeline(TimelineEvent{
+			SchemaVersion: ArtifactSchemaVersion, ID: workspace.SpecID + ":follow-up", Type: TimelineFollowUpStarted,
+			Actor: "human", Source: "history", OccurredAt: now.UTC(),
+			Details: TimelineDetails{SpecID: workspace.OriginSpecID, Summary: "follow-up to " + workspace.OriginSpecID},
+		})
+	}
+	return nil
+}
+
+func (workspace *Workspace) Start(title, baseSHA string, now time.Time, gitState ...string) error {
+	if workspace.Active {
+		return fmt.Errorf("a change is already active; finish it with `spec done`")
+	}
+	if err := workspace.prepareNewSpec(); err != nil {
+		return err
 	}
 	workspace.Active = true
 	workspace.Title = title
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
+	workspace.GitState = firstString(gitState)
+	workspace.StartingFingerprint = ""
+	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
-	return workspace.saveMetadata()
+	if err := workspace.saveMetadata(); err != nil {
+		return err
+	}
+	return workspace.recordSpecStart(now)
 }
 
-func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setup) error {
+func (workspace *Workspace) BeginSetup(baseSHA string, now time.Time, setup Setup, gitState ...string) error {
 	if workspace.Active {
 		return fmt.Errorf("a change is already active; finish it with `spec done`")
 	}
-	for _, name := range []string{"prompt.md", "verification.json"} {
-		if err := os.Remove(filepath.Join(workspace.Dir, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	if err := workspace.prepareNewSpec(); err != nil {
+		return err
 	}
 	copy := setup
 	workspace.Active = true
 	workspace.Title = strings.TrimSpace(setup.Title)
 	workspace.StartedAt = now
 	workspace.BaseSHA = baseSHA
+	workspace.GitState = firstString(gitState)
+	workspace.StartingFingerprint = ""
+	workspace.OriginSpecID = strings.TrimSpace(setup.OriginSpecID)
 	workspace.Setup = &copy
 	workspace.SandboxSession = nil
-	return workspace.saveMetadata()
+	if err := workspace.saveMetadata(); err != nil {
+		return err
+	}
+	return workspace.recordSpecStart(now)
 }
 
 func (workspace *Workspace) SaveSetup(setup Setup) error {
@@ -337,15 +424,19 @@ func (workspace *Workspace) SetVerificationCommands(commands []string) error {
 }
 
 func (workspace *Workspace) Abandon() error {
-	for _, name := range []string{"prompt.md", "verification.json"} {
+	for _, name := range activeArtifactNames() {
 		if err := os.Remove(filepath.Join(workspace.Dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
 	workspace.Active = false
+	workspace.SpecID = ""
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.GitState = ""
+	workspace.StartingFingerprint = ""
+	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	return workspace.saveMetadata()
@@ -414,6 +505,53 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	if !workspace.Active {
 		return History{}, fmt.Errorf("no active change; run `spec new`")
 	}
+	plan, err := workspace.Plan()
+	if err != nil {
+		return History{}, err
+	}
+	evidence, err := workspace.EvidenceRuns()
+	if err != nil {
+		return History{}, err
+	}
+	if _, err := workspace.TimelineEvents(); err != nil {
+		return History{}, err
+	}
+	if record.SpecID == "" {
+		record.SpecID = workspace.SpecID
+	}
+	if record.OriginSpecID == "" {
+		record.OriginSpecID = workspace.OriginSpecID
+	}
+	if record.Intent == "" {
+		record.Intent = record.Title
+	}
+	if record.StartedAt.IsZero() {
+		record.StartedAt = workspace.StartedAt
+	}
+	if record.BaseSHA == "" {
+		record.BaseSHA = workspace.BaseSHA
+	}
+	record.StartingFingerprint = workspace.StartingFingerprint
+	if record.Plan == nil {
+		record.Plan = plan
+	}
+	if record.Evidence == nil {
+		record.Evidence = evidence
+	}
+	if record.DurationSeconds == 0 && !record.StartedAt.IsZero() && record.FinishedAt.After(record.StartedAt) {
+		record.DurationSeconds = int64(record.FinishedAt.Sub(record.StartedAt) / time.Second)
+	}
+	if err := workspace.AppendTimeline(TimelineEvent{
+		SchemaVersion: ArtifactSchemaVersion, ID: workspace.SpecID + ":completed", Type: TimelineSpecCompleted,
+		Actor: "human", Source: "spec", OccurredAt: record.FinishedAt.UTC(),
+		Details: TimelineDetails{SpecID: workspace.SpecID, Title: record.Title},
+	}); err != nil {
+		return History{}, err
+	}
+	record.Timeline, err = workspace.TimelineEvents()
+	if err != nil {
+		return History{}, err
+	}
 	archive, err := workspace.archiveSpec(record.Title, specContent)
 	if err != nil {
 		return History{}, err
@@ -425,15 +563,19 @@ func (workspace *Workspace) Finish(record History, specContent []byte, activePat
 	if err := os.Remove(activePath); err != nil {
 		return History{}, err
 	}
-	for _, name := range []string{"prompt.md", "verification.json"} {
+	for _, name := range activeArtifactNames() {
 		if err := os.Remove(filepath.Join(workspace.Dir, name)); err != nil && !os.IsNotExist(err) {
 			return History{}, err
 		}
 	}
 	workspace.Active = false
+	workspace.SpecID = ""
 	workspace.Title = ""
 	workspace.StartedAt = time.Time{}
 	workspace.BaseSHA = ""
+	workspace.GitState = ""
+	workspace.StartingFingerprint = ""
+	workspace.OriginSpecID = ""
 	workspace.Setup = nil
 	workspace.SandboxSession = nil
 	if err := workspace.saveMetadata(); err != nil {

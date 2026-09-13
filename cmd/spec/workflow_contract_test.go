@@ -1,0 +1,764 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/TaylorEdgerton/spec-cli/internal/change"
+	"github.com/TaylorEdgerton/spec-cli/internal/discovery"
+	"github.com/TaylorEdgerton/spec-cli/internal/gitutil"
+	"github.com/TaylorEdgerton/spec-cli/internal/state"
+	"github.com/charmbracelet/x/ansi"
+)
+
+func TestRootSuspendsNavigationShortcutsWhileTextEditorsHaveFocus(t *testing.T) {
+	definition := newDefinitionModel(state.Setup{Title: "Intent"}, "clean")
+	definition.startEdit(0)
+	app := &workflowApp{screen: screenDefinition, active: definition}
+	for _, letter := range "gnq" {
+		app.Update(key(letter, string(letter)))
+	}
+	app.Update(tea.PasteMsg{Content: " pasted"})
+	if app.navOpen || app.quitConfirm || app.screen != screenDefinition || !strings.Contains(definition.editor.value, "gnq pasted") {
+		t.Fatalf("definition typing triggered root navigation: screen=%q nav=%v quit=%v value=%q", app.screen, app.navOpen, app.quitConfirm, definition.editor.value)
+	}
+	if plain := ansi.Strip(definition.View().Content); strings.Contains(plain, "g home") || !strings.Contains(plain, "Esc cancel edit") {
+		t.Fatalf("definition editor advertised inactive root shortcuts:\n%s", plain)
+	}
+
+	documents := newDocumentModel()
+	documents.editing = true
+	documents.editor = newLineEditor("")
+	app.active, app.screen = documents, screenDocuments
+	for _, letter := range "qng" {
+		app.Update(key(letter, string(letter)))
+	}
+	if app.navOpen || app.quitConfirm || app.screen != screenDocuments || documents.editor.value != "qng" {
+		t.Fatalf("document typing triggered root navigation: screen=%q nav=%v quit=%v value=%q", app.screen, app.navOpen, app.quitConfirm, documents.editor.value)
+	}
+	if plain := ansi.Strip(documents.View().Content); strings.Contains(plain, "g home") {
+		t.Fatalf("document editor advertised inactive root shortcuts:\n%s", plain)
+	}
+}
+
+func TestHistoryReopensCompletedSpecAsAnImmutableLinkedFollowUp(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	if err := workspace.Abandon(); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(workspace.Dir, "specs", "source.md")
+	if err := os.MkdirAll(filepath.Dir(archive), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archiveContent := "# Source\n\n## Intent\n\nImprove history\n\n## Scope\n\nKeep archives immutable\n\n## Acceptance Criteria\n\n- [x] Existing behaviour retained\n- [ ] Follow-up is linked\n"
+	if err := os.WriteFile(archive, []byte(archiveContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := state.History{SpecID: "SPEC-001", Title: "Improve history", Intent: "Improve history", Scope: "Keep archives immutable", BaseSHA: "oldbaseline", SpecArchive: "specs/source.md", FinishedAt: time.Now().Add(-time.Hour), CompletionAcknowledged: true, Plan: reviewPlanFixture(), Evidence: []state.EvidenceRun{{ID: "old-evidence"}}}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Dir, "history.jsonl"), append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, screenHistory)
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	app.Update(key('f', "f"))
+	history := app.active.(*historyModel)
+	if !history.followupConfirm {
+		t.Fatal("follow-up action did not ask for confirmation")
+	}
+	if loaded, _ := state.Load(root); loaded.Active {
+		t.Fatal("opening follow-up confirmation activated a Spec")
+	}
+	app.Update(key(tea.KeyRight, ""))
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenDefinition {
+		t.Fatalf("follow-up opened %q, want Definition", app.screen)
+	}
+	loaded, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := gitutil.Head(root)
+	if !loaded.Active || loaded.SpecID == record.SpecID || loaded.BaseSHA != head || loaded.OriginSpecID != record.SpecID || loaded.Setup == nil {
+		t.Fatalf("linked follow-up metadata = %+v", loaded.Metadata)
+	}
+	if loaded.Setup.Title != record.Intent || loaded.Setup.Outcome != record.Scope || len(loaded.Setup.Criteria) != 2 {
+		t.Fatalf("follow-up definition = %+v", loaded.Setup)
+	}
+	if plan, _ := loaded.Plan(); plan != nil {
+		t.Fatalf("follow-up silently reused plan: %+v", plan)
+	}
+	if evidenceRuns, _ := loaded.EvidenceRuns(); len(evidenceRuns) != 0 {
+		t.Fatalf("follow-up silently reused evidence: %+v", evidenceRuns)
+	}
+	events, _ := loaded.TimelineEvents()
+	foundLink := false
+	for _, event := range events {
+		if event.Type == state.TimelineFollowUpStarted && event.Details.SpecID == record.SpecID {
+			foundLink = true
+		}
+	}
+	if !foundLink {
+		t.Fatalf("follow-up timeline has no source link: %+v", events)
+	}
+	after, _ := os.ReadFile(archive)
+	if !bytes.Equal(before, after) {
+		t.Fatal("follow-up modified its source archive")
+	}
+	if _, err := saveDefinitionContract(root, *loaded.Setup, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := change.Done(root, "follow-up complete", time.Now())
+	if err != nil || finished.OriginSpecID != record.SpecID {
+		t.Fatalf("completed follow-up link = %+v, %v", finished, err)
+	}
+	completed, err := loaded.HistoryRecords()
+	if err != nil || len(completed) != 2 {
+		t.Fatalf("linked History records = %+v, %v", completed, err)
+	}
+	model := newHistoryModel(root, loaded.Dir, completed, false)
+	for selected, _ := model.selected(); selected.SpecID != record.SpecID; selected, _ = model.selected() {
+		model.move(1)
+	}
+	if plain := historyPlain(model); !strings.Contains(plain, "Follow-ups") || !strings.Contains(plain, finished.SpecID) {
+		t.Fatalf("source timeline does not expose the completed follow-up:\n%s", plain)
+	}
+	model.timeline = true
+	if plain := historyPlain(model); !strings.Contains(plain, "Follow-up started") || !strings.Contains(plain, finished.SpecID) {
+		t.Fatalf("source timeline does not derive its reverse follow-up link:\n%s", plain)
+	}
+}
+
+func TestHistoryFollowUpIsUnavailableWhileAnotherSpecIsActive(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	history := newHistoryModel(root, workspace.Dir, historyFixture(), true)
+	app := &workflowApp{root: root, screen: screenHistory, active: history}
+	app.Update(key('f', "f"))
+	if history.followupConfirm || !strings.Contains(history.status, "active Spec") {
+		t.Fatalf("active-Spec guard = confirm:%v status:%q", history.followupConfirm, history.status)
+	}
+}
+
+func TestWideNavigationRailUsesCompactUnambiguousStageLabels(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	app := newWorkflowApp(root, screenDefinition)
+	plain := ansi.Strip(app.navigationRail(24, 34))
+	if !strings.Contains(plain, "AI Plan") || strings.Contains(plain, "Implementation Plan") || strings.Contains(plain, "– Plan") {
+		t.Fatalf("wide navigation rail retained an ambiguous wrapped plan label:\n%s", plain)
+	}
+}
+
+func TestRootNavigationExposesAllFiveReviewDestinations(t *testing.T) {
+	screen := (&workflowApp{}).navigationScreen()
+	want := map[string]string{
+		"navigation.summary": actionSummary, "navigation.changes": actionReviewChanges,
+		"navigation.integration": actionIntegration, "navigation.evidence": actionEvidence,
+		"navigation.diff": actionDiff,
+	}
+	for _, item := range screen.selectableItems() {
+		if action, ok := want[item.ID]; ok {
+			if string(item.Action) != action {
+				t.Fatalf("%s action = %q, want %q", item.ID, item.Action, action)
+			}
+			delete(want, item.ID)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing review destinations: %+v", want)
+	}
+}
+
+func TestWorkflowScreensExposeCanonicalVisualAndNavigationOrder(t *testing.T) {
+	definition := newDefinitionModel(state.Setup{Title: "Intent"}, "clean").screen()
+	if got, want := definition.selectableItemIDs(), []string{definitionIntentID, definitionScopeID, definitionAcceptanceID, definitionCreateID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("definition canonical order = %v, want %v", got, want)
+	}
+	overview := newOverviewModel(overviewData{Facts: overviewFacts{BaselineReady: true}}).screen()
+	if got, want := overview.selectableItemIDs(), []string{"overview.next.prompt", "overview.next.plan.capture", "overview.next.review", "overview.next.explore"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("overview canonical NEXT actions = %v, want %v", got, want)
+	}
+	plan := newPlanModel(t.TempDir(), reviewPlanFixture()).screen()
+	if got, want := plan.selectableItemIDs(), []string{"plan.file.0", "plan.file.1", "plan.file.2", "plan.integration.0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan canonical order = %v, want %v", got, want)
+	}
+	reviewModel := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+	reviewModel.tab = tabChanges
+	if got := reviewModel.screen().selectableItemIDs(); len(got) == 0 || !strings.HasPrefix(got[0], "review.file.") {
+		t.Fatalf("review canonical rows = %v", got)
+	}
+	history := newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false).screen()
+	if got := history.selectableItemIDs(); len(got) != len(historyFixture()) || !strings.HasPrefix(got[0], "history.") {
+		t.Fatalf("history canonical rows = %v", got)
+	}
+}
+
+func TestViewportKeepsCanonicalSelectionVisibleWithoutResizeClamp(t *testing.T) {
+	lines := []string{"zero", "one", "two", "three", "four", "five", "six", "selected", "eight"}
+	visible, offset := (screenViewport{Height: 4}).visible(lines, 7)
+	if offset != 5 || !strings.Contains(strings.Join(visible, "\n"), "selected") {
+		t.Fatalf("offset=%d visible=%v", offset, visible)
+	}
+	if strings.Contains(strings.Join(visible, "\n"), "resize to see") {
+		t.Fatalf("viewport used an unreachable resize clamp: %v", visible)
+	}
+}
+
+func TestShellPreservesWireframeHeaderRows(t *testing.T) {
+	plain := ansi.Strip(uiAppShell(80, 24, "SPEC-014 · Disable automatic indexing  OPEN\nGit: main · starting state a1b2c3d  12 min", "Intent\nAdd an option", "enter open stage  q exit"))
+	lines := strings.Split(plain, "\n")
+	first, second := -1, -1
+	for index, line := range lines {
+		if strings.Contains(line, "SPEC-014") {
+			first = index
+		}
+		if strings.Contains(line, "Git: main") {
+			second = index
+		}
+	}
+	if first < 0 || second != first+1 {
+		t.Fatalf("header rows were not preserved together:\n%s", plain)
+	}
+}
+
+func TestContextReviewShowsDiscoveryProvenanceAndExplicitContinuation(t *testing.T) {
+	model := newContextReviewModel([]discovery.Result{{Path: "indexer/indexer.go", Symbols: []discovery.Symbol{{Name: "ensureIndex", Capability: discovery.CapabilityPrecise}}}})
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	plain := ansi.Strip(model.View().Content)
+	for _, expected := range []string{"Likely implementation context", "indexer/indexer.go", "ensureIndex", "precise", "Continue", "Skip"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("context review missing %q:\n%s", expected, plain)
+		}
+	}
+	model.Update(key(tea.KeyEnter, ""))
+	if model.nav != actionContinue {
+		t.Fatalf("context continue action = %q", model.nav)
+	}
+}
+
+func TestPlanCaptureStartsWithChoiceAndClipboardPreviewPersistsOnlyOnAccept(t *testing.T) {
+	raw := "```spec-plan\n" + validPlanJSON + "\n```"
+	model := newPlanCaptureModel("")
+	if model.mode != planCaptureChoice || strings.Contains(ansi.Strip(model.View().Content), "Paste one response containing") {
+		t.Fatalf("plan capture did not start at the guided choice: %+v\n%s", model, ansi.Strip(model.View().Content))
+	}
+	plain := ansi.Strip(model.View().Content)
+	for _, expected := range []string{"Copy planning prompt", "Paste AI plan", "spec plan submit --stdin", "Continue without plan"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("plan choice missing %q:\n%s", expected, plain)
+		}
+	}
+	model.readClipboard = func() (string, error) { return raw, nil }
+	model.Update(key('v', "v"))
+	if model.mode != planCaptureClipboardPreview || model.plan.Summary == "" || model.decision != "" {
+		t.Fatalf("clipboard was not validated without persistence: %+v", model)
+	}
+	plain = ansi.Strip(model.View().Content)
+	for _, expected := range []string{"spec-plan detected", "Accept Plan", "Paste different response", "Inspect/Edit", "Skip", "config/config.go"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("plan capture missing %q:\n%s", expected, plain)
+		}
+	}
+	model.cursor = 2
+	model.Update(key(tea.KeyEnter, ""))
+	if model.decision != planEdit || model.mode != planCapturePaste {
+		t.Fatalf("edit result = %+v", model)
+	}
+	model.mode, model.cursor = planCaptureClipboardPreview, 3
+	model.Update(key(tea.KeyEnter, ""))
+	if model.decision != planSkip {
+		t.Fatalf("skip decision = %q", model.decision)
+	}
+	model.mode, model.cursor, model.decision = planCaptureClipboardPreview, 0, ""
+	model.Update(key(tea.KeyEnter, ""))
+	if model.decision != planAccept {
+		t.Fatalf("accept decision = %q", model.decision)
+	}
+}
+
+func TestPlanCaptureClipboardErrorFallsBackToManualPaste(t *testing.T) {
+	model := newPlanCaptureModel("")
+	model.readClipboard = func() (string, error) { return "not a plan", nil }
+	model.Update(key('v', "v"))
+	if model.mode != planCaptureClipboardError || !strings.Contains(model.status, "no fenced spec-plan") {
+		t.Fatalf("invalid clipboard state = %+v", model)
+	}
+	if strings.Contains(ansi.Strip(model.View().Content), "Ctrl+Enter preview") {
+		t.Fatal("manual editor was shown before the explicit fallback action")
+	}
+	model.Update(key(tea.KeyEnter, ""))
+	if model.mode != planCapturePaste {
+		t.Fatalf("manual paste fallback not opened: %+v", model)
+	}
+}
+
+func TestPlanCaptureCLIWaitRefreshFindsPersistedValidatedPlan(t *testing.T) {
+	model := newPlanCaptureModel("")
+	model.reloadPlan = func() (*state.StoredChangePlan, error) { return nil, nil }
+	model.Update(key('r', "r"))
+	if model.mode != planCaptureChoice || !strings.Contains(ansi.Strip(model.View().Content), "spec plan submit --stdin") {
+		t.Fatalf("CLI wait state = %+v\n%s", model, ansi.Strip(model.View().Content))
+	}
+	plan, err := validateChangePlan([]byte(validPlanJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.reloadPlan = func() (*state.StoredChangePlan, error) {
+		return &state.StoredChangePlan{Source: state.PlanSourceCLI, Plan: plan}, nil
+	}
+	model.Update(key('r', "r"))
+	if model.mode != planCaptureClipboardPreview || !model.acceptedPersisted || model.plan.Summary == "" {
+		t.Fatalf("CLI refresh did not load persisted plan: %+v", model)
+	}
+}
+
+func TestPlanCaptureCopiesPlanPromptInPlaceAndReportsFailureHonestly(t *testing.T) {
+	model := newPlanCaptureModel("")
+	copied := 0
+	model.copyPlanPrompt = func() error { copied++; return nil }
+	model.Update(key('p', "p"))
+	if copied != 1 || model.mode != planCaptureChoice || model.nav != actionNone || !strings.Contains(model.status, "copied") {
+		t.Fatalf("copy action state=%+v copied=%d", model, copied)
+	}
+	model.copyPlanPrompt = func() error { return fmt.Errorf("no clipboard") }
+	model.Update(key('p', "p"))
+	if !strings.Contains(model.status, "Clipboard unavailable") || strings.Contains(model.status, "copied") {
+		t.Fatalf("failed copy status=%q", model.status)
+	}
+}
+
+func TestPlanWireframeAdvertisedActionsAreImplemented(t *testing.T) {
+	model := newPlanModel(t.TempDir(), reviewPlanFixture())
+	model.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	plain := ansi.Strip(model.View().Content)
+	for _, expected := range []string{"enter inspect", "e edit plan", "c continue", "b back"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("plan footer missing %q:\n%s", expected, plain)
+		}
+	}
+	model.Update(key('c', "c"))
+	if model.nav != actionContinue {
+		t.Fatalf("continue action = %q", model.nav)
+	}
+	edit := newPlanModel(t.TempDir(), reviewPlanFixture())
+	edit.Update(key('e', "e"))
+	if edit.nav != actionPlanCapture {
+		t.Fatalf("edit action = %q", edit.nav)
+	}
+}
+
+func TestPersistentWorkflowRootTransitionsWithoutQuittingTeaProgram(t *testing.T) {
+	app := newWorkflowApp(t.TempDir(), screenOverview)
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	if app.screen != screenOverview || strings.TrimSpace(app.View().Content) == "" {
+		t.Fatalf("initial workflow app = %+v", app)
+	}
+	app.Update(workflowNavigateMsg{Action: actionPlanCapture})
+	if app.screen != shellScreen(actionPlanCapture) || app.done {
+		t.Fatalf("plan capture transition = screen:%q done:%v", app.screen, app.done)
+	}
+	app.Update(key('q', "q"))
+	if app.done || !app.quitConfirm || app.quitCursor != 0 {
+		t.Fatal("q outside Home did not open a safe confirmation")
+	}
+	app.Update(key(tea.KeyEnter, ""))
+	if app.done || app.quitConfirm {
+		t.Fatal("default quit confirmation did not stay in Spec")
+	}
+}
+
+func TestRootNavigationBackHomeQuitAndEmergencyExitContract(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	before, err := os.ReadFile(filepath.Join(workspace.Dir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, screenOverview)
+	app.Update(key(tea.KeyEsc, ""))
+	if app.done || app.screen != screenHome {
+		t.Fatalf("back from root child = screen:%q done:%v", app.screen, app.done)
+	}
+	app.Update(key(tea.KeyDown, ""))
+	afterCursor, err := os.ReadFile(filepath.Join(workspace.Dir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterCursor) {
+		t.Fatal("Home cursor movement mutated persisted workflow state")
+	}
+	app.Update(key(tea.KeyEsc, ""))
+	if app.done || app.screen != screenHome {
+		t.Fatalf("back from Home = screen:%q done:%v", app.screen, app.done)
+	}
+
+	app.Update(workflowNavigateMsg{Action: actionResume})
+	if app.screen == screenHome {
+		t.Fatal("Resume did not leave Home")
+	}
+	app.Update(key('g', "g"))
+	after, err := os.ReadFile(filepath.Join(workspace.Dir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.screen != screenHome || !bytes.Equal(before, after) {
+		t.Fatalf("g Home mutated workflow state or missed Home: screen=%q", app.screen)
+	}
+
+	app.Update(key('q', "q"))
+	if !app.done {
+		t.Fatal("q from Home did not exit")
+	}
+
+	emergency := newWorkflowApp(root, screenHome)
+	emergency.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl}))
+	if !emergency.done {
+		t.Fatal("Ctrl+C did not emergency-exit")
+	}
+}
+
+func TestRootHomeDestinationsStayInsideOneApplication(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	for action, want := range map[string]shellScreen{
+		actionResume:    screenDefinition,
+		actionExplore:   screenExplore,
+		actionRecent:    screenHistory,
+		actionDocuments: screenDocuments,
+	} {
+		app := newWorkflowApp(root, screenHome)
+		app.Update(workflowNavigateMsg{Action: action})
+		if app.done || app.screen != want || app.active == nil {
+			t.Fatalf("%s = screen:%q active:%T done:%v, want %q", action, app.screen, app.active, app.done, want)
+		}
+		app.Update(workflowNavigateMsg{Action: actionBack})
+		if app.done || app.screen != screenHome {
+			t.Fatalf("%s back = screen:%q done:%v", action, app.screen, app.done)
+		}
+	}
+}
+
+func TestIdleHomeStartsDefinitionInsideRootAndBackReturnsHome(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	if err := workspace.Abandon(); err != nil {
+		t.Fatal(err)
+	}
+	app := newWorkflowApp(root, screenHome)
+	app.Update(workflowNavigateMsg{Action: actionNew})
+	if app.done || app.screen != screenDefinition {
+		t.Fatalf("new change = screen:%q done:%v", app.screen, app.done)
+	}
+	loaded, err := state.Load(root)
+	if err != nil || !loaded.Active || loaded.Setup == nil {
+		t.Fatalf("new change setup = %+v, %v", loaded.Metadata, err)
+	}
+	app.Update(workflowNavigateMsg{Action: actionBack})
+	if app.done || app.screen != screenHome {
+		t.Fatalf("new change back = screen:%q done:%v", app.screen, app.done)
+	}
+}
+
+func TestRootResponsiveNavigationRailOverlayAndMinimumSize(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	wide := newWorkflowApp(root, screenOverview)
+	wide.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	wideView := wide.View().Content
+	widePlain := ansi.Strip(wideView)
+	for _, expected := range []string{"CHANGE", "Define", "REVIEW", "Summary", "Changes", "Integration", "Evidence", "Diff", "Explore", "History", "Home"} {
+		if !strings.Contains(widePlain, expected) {
+			t.Fatalf("wide navigation missing %q:\n%s", expected, widePlain)
+		}
+	}
+	if lipgloss.Width(wideView) > 120 || lipgloss.Height(wideView) > 34 {
+		t.Fatalf("wide root bounds = %dx%d", lipgloss.Width(wideView), lipgloss.Height(wideView))
+	}
+
+	narrow := newWorkflowApp(root, screenOverview)
+	narrow.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	narrow.Update(key('n', "n"))
+	narrowPlain := ansi.Strip(narrow.View().Content)
+	if !strings.Contains(narrowPlain, "Navigate") || !strings.Contains(narrowPlain, "Home") {
+		t.Fatalf("narrow navigation overlay missing:\n%s", narrowPlain)
+	}
+
+	small := newWorkflowApp(root, screenOverview)
+	small.Update(tea.WindowSizeMsg{Width: 50, Height: 12})
+	if plain := ansi.Strip(small.View().Content); !strings.Contains(plain, "Terminal is too small") {
+		t.Fatalf("small terminal state missing:\n%s", plain)
+	}
+}
+
+func TestPersistentWorkflowCanSkipAPlanWithoutPersistingOne(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	setup := *workspace.Setup
+	setup.Title = "Continue without a plan"
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saveDefinitionContract(root, setup, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, shellScreen(actionPlanCapture))
+	raw := "```spec-plan\n" + validPlanJSON + "\n```"
+	app.Update(tea.PasteMsg{Content: raw})
+	app.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModCtrl}))
+	capture := app.active.(*planCaptureModel)
+	capture.cursor = 3
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenOverview {
+		t.Fatalf("skip returned to %q, want Overview", app.screen)
+	}
+	stored, err := workspace.Plan()
+	if err != nil || stored != nil {
+		t.Fatalf("skipped plan persisted: %+v, %v", stored, err)
+	}
+}
+
+func TestChangeSummaryIsTheFirstReviewViewAndExplicitDecisionState(t *testing.T) {
+	model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+	model.tab = tabSummary
+	plain := ansi.Strip(model.View().Content)
+	if !strings.Contains(plain, "Review · Summary") || !strings.Contains(plain, "Complete Spec") || !strings.Contains(plain, "Request Changes") {
+		t.Fatalf("summary contract missing:\n%s", plain)
+	}
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	plain = ansi.Strip(model.View().Content)
+	assertTextOrder(t, plain, "Original intent", "Implementation plan", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Original plan vs actual", "Review attention", "Evidence", "Complete Spec", "Request Changes")
+	if !sameRenderedLine(plain, "Complete Spec", "Request Changes") {
+		t.Fatalf("summary decisions are not presented together:\n%s", plain)
+	}
+	if model.snap.RefreshedAt.IsZero() || model.snap.RefreshedAt.After(time.Now().Add(24*time.Hour)) {
+		t.Fatalf("fixture refresh boundary invalid: %v", model.snap.RefreshedAt)
+	}
+}
+
+func TestPersistentWorkflowFollowsDefinitionPlanRefreshReviewDecisionAndHistory(t *testing.T) {
+	root, workspace, _ := definitionRepository(t, false)
+	setup := *workspace.Setup
+	setup.Title = "Disable automatic indexing"
+	setup.Outcome = "Preserve manual indexing"
+	if err := workspace.SaveSetup(setup); err != nil {
+		t.Fatal(err)
+	}
+
+	app := newWorkflowApp(root, screenDefinition)
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	app.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModCtrl}))
+	if app.screen != shellScreen(actionContextReview) {
+		t.Fatalf("after create screen = %q, want context review", app.screen)
+	}
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenOverview {
+		t.Fatalf("after context screen = %q, want Overview", app.screen)
+	}
+
+	app.Update(workflowNavigateMsg{Action: actionPlanCapture})
+	raw := "```spec-plan\n" + validPlanJSON + "\n```"
+	app.Update(tea.PasteMsg{Content: raw})
+	app.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModCtrl}))
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenPlan {
+		t.Fatalf("accepted plan screen = %q", app.screen)
+	}
+	stored, err := workspace.Plan()
+	if err != nil || stored == nil || stored.Plan.Summary == "" {
+		t.Fatalf("stored pasted plan = %+v, %v", stored, err)
+	}
+	app.Update(key('c', "c"))
+	if app.screen != screenOverview {
+		t.Fatalf("continue from plan = %q", app.screen)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "implementation.go"), []byte("package base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if overview := app.active.(*overviewModel); overview.data.Stats.Files != 0 {
+		t.Fatalf("Overview silently refreshed actual state: %+v", overview.data.Stats)
+	}
+	app.Update(workflowNavigateMsg{Action: actionReview})
+	reviewed, ok := app.active.(*reviewModel)
+	if !ok || app.screen != screenReview || reviewed.tab != tabSummary || reviewed.snap.Projection.Stats.Files == 0 {
+		t.Fatalf("explicit review refresh = screen:%q model:%T", app.screen, app.active)
+	}
+	app.Update(workflowNavigateMsg{Action: actionBack})
+	overviewAfterRefresh, ok := app.active.(*overviewModel)
+	if !ok || !overviewAfterRefresh.data.StatsRefreshed || overviewAfterRefresh.data.RefreshedAt.IsZero() || overviewAfterRefresh.data.Stats.Files == 0 {
+		t.Fatalf("Overview did not receive cached explicit refresh: screen:%q model:%T data:%+v", app.screen, app.active, overviewAfterRefresh)
+	}
+	app.Update(workflowNavigateMsg{Action: actionReview})
+	reviewed = app.active.(*reviewModel)
+	reviewed.tab = tabEvidence
+	app.Update(key('s', "s"))
+	if app.screen != screenReview {
+		t.Fatalf("evidence to summary = %q", app.screen)
+	}
+	summary := app.active.(*reviewModel)
+	setReviewCursorByID(t, summary, "review.request_changes")
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenOverview {
+		t.Fatalf("Request Changes returned to %q", app.screen)
+	}
+
+	app.Update(workflowNavigateMsg{Action: actionReview})
+	app.Update(workflowNavigateMsg{Action: actionSummary})
+	setReviewCursorByID(t, app.active.(*reviewModel), "review.complete")
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenComplete {
+		t.Fatalf("Complete Spec opened %q, want sign-off", app.screen)
+	}
+	if records, err := workspace.HistoryRecords(); err != nil || len(records) != 0 {
+		t.Fatalf("entering sign-off archived early: %+v, %v", records, err)
+	}
+	app.Update(key(tea.KeyEnter, ""))
+	if app.screen != screenHistory {
+		t.Fatalf("Complete Spec opened %q", app.screen)
+	}
+	records, err := workspace.HistoryRecords()
+	if err != nil || len(records) != 1 || records[0].BaseSHA == "" || records[0].Stats.Files == 0 {
+		t.Fatalf("archived history = %+v, %v", records, err)
+	}
+}
+
+func TestPersistentRootUsesAlternateScreenAndPassesDiffHunkKeys(t *testing.T) {
+	root, _, _ := definitionRepository(t, false)
+	app := newWorkflowApp(root, screenHome)
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	for _, state := range []struct {
+		name string
+		set  func()
+	}{
+		{"home", func() {}},
+		{"navigation", func() { app.openNavigation() }},
+		{"quit confirmation", func() { app.navOpen = false; app.quitConfirm = true }},
+	} {
+		state.set()
+		view := app.View()
+		if !view.AltScreen {
+			t.Fatalf("%s view did not request alternate screen", state.name)
+		}
+		if first := strings.Split(ansi.Strip(view.Content), "\n")[0]; !strings.HasPrefix(first, "╭") || !strings.HasSuffix(first, "╮") {
+			t.Fatalf("%s top frame is incomplete: %q", state.name, first)
+		}
+	}
+
+	reviewed := newReviewModel(root, reviewSnapshotFixture(reviewPlanFixture()))
+	reviewed.tab = tabDiff
+	for reviewed.diffFile() != "indexer/indexer.go" {
+		reviewed.move(1)
+	}
+	app.active, app.screen, app.navOpen, app.quitConfirm = reviewed, screenReview, false, false
+	app.Update(key('n', "n"))
+	if app.navOpen || reviewed.hunk != 1 {
+		t.Fatalf("root intercepted next-hunk key: nav=%v hunk=%d", app.navOpen, reviewed.hunk)
+	}
+}
+
+func TestASCIIWireframeContractsAtSupportedWidths(t *testing.T) {
+	type contractModel interface {
+		Update(tea.Msg) (tea.Model, tea.Cmd)
+		View() tea.View
+	}
+	tests := []struct {
+		name     string
+		model    func() contractModel
+		expected []string
+	}{
+		{"definition", func() contractModel {
+			return newDefinitionModel(state.Setup{Title: "Disable automatic indexing", Outcome: "Preserve manual indexing"}, "clean")
+		}, []string{"Spec · New Change", "Define", "Intent", "Scope / expected behaviour", "Acceptance", "Create Spec"}},
+		{"overview", func() contractModel {
+			return newOverviewModel(overviewData{Title: "Disable automatic indexing", SpecID: "SPEC-014", Branch: "main", Baseline: reviewBaseline, Intent: "Disable automatic indexing", Scope: "Preserve manual indexing", StartedAt: time.Now().Add(-12 * time.Minute), Now: time.Now(), Facts: overviewFacts{BaselineReady: true}})
+		}, []string{"SPEC-014", "main", "Intent", "NEXT", "Change lifecycle", "Since starting state"}},
+		{"plan", func() contractModel { return newPlanModel(t.TempDir(), reviewPlanFixture()) }, []string{"AI Plan", "Summary", "Planned changes", "Existing integration points", "enter inspect"}},
+		{"review-changes", func() contractModel {
+			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+			model.tab = tabChanges
+			return model
+		}, []string{"Review · Changes", "[Changes]", "Matched", "Additional"}},
+		{"integration", func() contractModel {
+			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+			model.tab = tabIntegration
+			return model
+		}, []string{"Review · Integration", "Existing-code boundaries", "runIndexCommand", "planned"}},
+		{"evidence", func() contractModel {
+			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+			model.tab = tabEvidence
+			return model
+		}, []string{"Review · Evidence", "TestAutoIndexCanBeDisabled", "starting state", "run tests"}},
+		{"summary", func() contractModel {
+			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+			model.tab = tabSummary
+			return model
+		}, []string{"Review · Summary", "[Summary]", "Original intent", "Actual change", "Files", "Lines", "Tests", "Reviewability", "Review attention", "Evidence", "Complete Spec", "Request Changes"}},
+		{"complete", func() contractModel {
+			return newCompletionModel(reviewSnapshotFixture(reviewPlanFixture()))
+		}, []string{"Complete · Sign-off", "Original intent", "Final change", "Review attention", "Acceptance review", "Evidence", "Complete and archive Spec", "Return to implementation"}},
+		{"diff", func() contractModel {
+			model := newReviewModel(t.TempDir(), reviewSnapshotFixture(reviewPlanFixture()))
+			model.tab = tabDiff
+			return model
+		}, []string{"Review · Diff", "Files", "Focused hunk", "Symbol"}},
+		{"history", func() contractModel { return newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false) }, []string{"Spec history", "Date", "Spec", "Status", "Selected", "Files", "duration"}},
+		{"timeline", func() contractModel {
+			model := newHistoryModel(t.TempDir(), t.TempDir(), historyFixture(), false)
+			model.timeline = true
+			return model
+		}, []string{"SPEC-002 · Timeline", "Timeline", "Spec created"}},
+	}
+	for _, test := range tests {
+		for _, size := range []struct{ width, height int }{{80, 24}, {120, 34}} {
+			t.Run(test.name+fmt.Sprintf("-%dx%d", size.width, size.height), func(t *testing.T) {
+				model := test.model()
+				model.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+				content := model.View().Content
+				plain := ansi.Strip(content)
+				for _, expected := range test.expected {
+					if !strings.Contains(plain, expected) {
+						t.Fatalf("wireframe missing %q:\n%s", expected, plain)
+					}
+				}
+				assertTextOrder(t, plain, test.expected...)
+				if strings.Contains(plain, "resize to see") {
+					t.Fatalf("wireframe retained hard clamp:\n%s", plain)
+				}
+				if lipgloss.Width(content) > size.width || lipgloss.Height(content) > size.height {
+					t.Fatalf("wireframe bounds = %dx%d, want <= %dx%d", lipgloss.Width(content), lipgloss.Height(content), size.width, size.height)
+				}
+			})
+		}
+	}
+}
+
+func sameRenderedLine(rendered string, fragments ...string) bool {
+	for _, line := range strings.Split(rendered, "\n") {
+		matched := true
+		for _, fragment := range fragments {
+			matched = matched && strings.Contains(line, fragment)
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}

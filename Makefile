@@ -1,12 +1,13 @@
 BINARY  := spec
 VERSION ?= dev
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+GO_TAGS := -tags "grammar_subset grammar_subset_go grammar_subset_python grammar_subset_javascript grammar_subset_typescript grammar_subset_tsx"
 TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
 .DEFAULT_GOAL := help
 
 build: ## Build the binary for the current platform
-	go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/spec
+	go build $(GO_TAGS) $(LDFLAGS) -o bin/$(BINARY) ./cmd/spec
 
 dev: ## Build and install the current checkout as version dev
 	$(MAKE) build VERSION=dev
@@ -16,13 +17,13 @@ fmt: ## Format Go source files
 	gofmt -w .
 
 vet: ## Run Go's built-in static analyzer
-	go vet ./...
+	go vet $(GO_TAGS) ./...
 
 lint: ## Check Go formatting and run go vet
 	./scripts/lint.sh
 
 test: ## Run tests
-	go test ./...
+	go test $(GO_TAGS) ./...
 
 verify: ## Run lint checks and tests
 	./scripts/verify.sh
@@ -34,7 +35,7 @@ dist: ### Build binaries for all target platforms
 		out=dist/$(BINARY)-$$os-$$arch; \
 		if [ $$os = windows ]; then out=$$out.exe; fi; \
 		echo "building $$out"; \
-		GOOS=$$os GOARCH=$$arch go build $(LDFLAGS) -o $$out ./cmd/spec || exit 1; \
+		GOOS=$$os GOARCH=$$arch go build $(GO_TAGS) $(LDFLAGS) -o $$out ./cmd/spec || exit 1; \
 	done
 
 release: ## Create a release and upload binaries to GitHub
