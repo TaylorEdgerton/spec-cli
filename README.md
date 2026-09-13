@@ -1,4 +1,4 @@
-# Spec-cli
+# Spec CLI
 
 Spec is a lightweight CLI for structured AI-assisted development.
 
@@ -22,19 +22,19 @@ spec verify
 spec
 ```
 
-Git is required. Run `spec init` to create or register a repository. A baseline commit is required before starting a Spec.
+Git is required. Run `spec init` in a repository with an initial commit.
 
-Running `spec` without a command opens the interactive terminal workflow. Run it again after exiting or closing the terminal to resume where you were.
+1. Define the change and acceptance criteria.
+2. Create a plan or generate an implementation prompt.
+3. Implement the change.
+4. Review changes and verification evidence.
+5. Complete the change.
 
-The setup asks the requirement questions. It then reviews success criteria, configures verification, optionally records a baseline, creates `.spec.md`, and provides an implementation prompt to use. Use the arrow keys and Enter to navigate. Use Shift+Tab or the Back item to revisit earlier answers.
-
-The active change is stored in `.spec.md` at the repository root, excluded from commits through `.git/info/exclude`.
+Spec stores the active change in `.spec.md` at the repository root. This file is excluded through `.git/info/exclude`.
 
 ## Install
 
 Linux and macOS:
-
-run these while spec is installed to update to the latest version
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TaylorEdgerton/spec-cli/main/install.sh | sh
@@ -60,11 +60,13 @@ spec init                 Register the current Git workspace.
 spec configure            Open global configuration and templates.
 spec new [title]          Start or resume guided Spec setup.
 spec prompt [--info]      Print a bounded, provider-neutral prompt.
+spec prompt --plan        Print the planning-only prompt.
 spec prompt --include-files
                           Include relevant file contents in the prompt.
 spec prompt --copy        Copy the prompt to the system clipboard.
+spec plan submit --stdin  Validate and store a ChangePlan read from stdin.
 spec verify               Run checks and record the workspace fingerprint.
-spec done [summary]       Review criteria and finish the active change.
+spec done [summary]       Explicitly finish and archive the active change.
 
 spec adr "Title"          Create an ADR in docs/adr/.
 spec readme               Create or prepare README.md in the current directory.
@@ -77,13 +79,9 @@ spec check                Report workspace readiness and warnings.
 spec uninstall            Remove Spec and installer-owned PATH setup.
 ```
 
-## State and configuration
+## Configuration
 
-Spec associates each workspace with its Git repository. It stores setup progress, generated prompts, verification results, completed specification archives, and short history records in the user state directory. The editable active specification is `.spec.md` in the workspace and should be the agent's current prompt reference.
-
-On Linux and macOS, external workspace state defaults to `~/.local/state/spec/projects/<workspace-id>/`. Windows uses the user cache directory under `Spec/State/projects/<workspace-id>/`.
-
-The installer creates the global configuration folder. On Linux, the default path is `~/.config/spec/`. The first `spec init` installs any missing default files:
+The first `spec init` creates default configuration files. On Linux, they are in `~/.config/spec/`:
 
 ```text
 config.yml
@@ -93,9 +91,9 @@ templates/
   runbook.md
 ```
 
-Run `spec configure` to open the folder to edit the files. Each document command reads its template from this folder every time it runs, so edits apply to the next time around. The ADR template can use `{{.Number}}` and `{{.Title}}`. The runbook template can use `{{.Title}}`.
+Use `spec configure` to edit these files. The ADR template supports `{{.Number}}` and `{{.Title}}`. The runbook template supports `{{.Title}}`.
 
-Interactive verification choices are stored in external workspace state. Existing workspace and global commands in `config.yml` remain available as fallbacks.
+Configure verification commands in `config.yml`:
 
 ```yaml
 verify:
@@ -108,23 +106,47 @@ workspaces:
       - ruff check .
 ```
 
-`spec done` requires a current passing result and asks the engineer to review success criterion before completing the Spec.
+## Prompts and plans
+
+Generate a planning prompt:
+
+```sh
+spec prompt --plan --copy
+```
+
+Submit the returned plan in the CLI or through standard input. A plan contains one `spec-plan` block:
+
+````text
+```spec-plan
+{"summary":"Describe the implementation","files":[{"path":"internal/example.go","action":"modify","reason":"Implement the requested behaviour"}],"integration_points":[],"verification":[],"uncertainties":[]}
+```
+````
+
+An agent with terminal access can submit the same JSON:
+
+```sh
+spec plan submit --stdin <<'JSON'
+{"summary":"Describe the implementation","files":[{"path":"internal/example.go","action":"modify","reason":"Implement the requested behaviour"}]}
+JSON
+```
+
+Use `spec prompt --copy` to generate an implementation prompt. Amend a plan when its scope changes after implementation starts.
+
+## Review and history
+
+Review compares the current Git state with the recorded starting state. Run `spec verify` to record check results. `spec done` archives the definition, plans, changes, and evidence.
 
 ## Project documents
 
-`spec readme` uses the global README template to create `README.md` in the current directory. This supports creation in subdirectories.
-
-`spec adr "Title"` creates a numbered decision record in `docs/adr/`. `spec runbook "Scenario"` creates or updates a named procedure such as `docs/runbooks/database-recovery.md`. Run `spec runbook` without a title to list existing runbooks.
+`spec readme` creates `README.md` in the current directory. `spec adr "Title"` creates a numbered decision record in `docs/adr/`. `spec runbook "Scenario"` creates or updates a procedure in `docs/runbooks/`.
 
 ## Prompt context
 
-Add file paths as list items in `.spec.md` under `## Relevant Files`. The `spec prompt` helps output a prompt based on `.spec.md`. Use `spec prompt --include-files` to include the contents of the Relevant Files list for pasting into another external chat session.
+Add paths to `## Relevant Files` in `.spec.md`. Use `spec prompt --include-files` to include their contents in a prompt.
 
 ## Docker Sandbox
 
-`spec sandbox` scans the complete workspace for sensitive file names to outline just in case, The command then uses Docker's `sbx` command with the Git working tree.
-
-For `claude`, `codex`, `copilot`, and `gemini` sandboxes, Spec enables native OpenTelemetry metrics and sends them to a collector inside the sandbox. Run `spec usage` to see the current usage. `spec done` stores the totals in external Spec history, which `spec usage history` displays the history for the workspace.
+`spec sandbox` runs the Git workspace with Docker Sandbox. For supported agents, `spec usage` reports sandbox usage and `spec usage history` reports archived usage.
 
 ## Development
 
@@ -137,9 +159,7 @@ make dev
 make dist VERSION=v0.1.0
 ```
 
-`make dev` builds the current checkout as version `dev`. If `spec` is already on PATH, it replaces that executable. Otherwise, it installs to `${XDG_BIN_HOME:-$HOME/.local/bin}` and adds the directory to PATH in `~/.profile`.
-
-Generated binaries are in `bin/` and `dist/`. Do not commit them.
+`make dev` builds the current checkout as version `dev` and installs it to your local binary directory.
 
 ## Release
 
