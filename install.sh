@@ -10,16 +10,16 @@ PATH_MARKER_END="# <<< spec-cli PATH <<<"
 
 version_is_higher() {
 	awk -v current="$1" -v candidate="$2" '
-		function component(value, index, parts) {
+		function component(value, position, parts) {
 			sub(/^v/, "", value)
 			split(value, parts, ".")
-			sub(/[^0-9].*$/, "", parts[index])
-			return parts[index] + 0
+			sub(/[^0-9].*$/, "", parts[position])
+			return parts[position] + 0
 		}
 		BEGIN {
-			for (index = 1; index <= 3; index++) {
-				currentPart = component(current, index)
-				candidatePart = component(candidate, index)
+			for (position = 1; position <= 3; position++) {
+				currentPart = component(current, position)
+				candidatePart = component(candidate, position)
 				if (candidatePart > currentPart) exit 0
 				if (candidatePart < currentPart) exit 1
 			}
